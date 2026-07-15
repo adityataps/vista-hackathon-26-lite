@@ -24,7 +24,7 @@ _client: Any = None
 
 _MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
-    "us.anthropic.claude-sonnet-4-6-20251001-v1:0",
+    "us.anthropic.claude-sonnet-4-20250514-v1:0",
 )
 _GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
 _GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "1")
