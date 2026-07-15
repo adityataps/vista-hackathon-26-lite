@@ -148,20 +148,36 @@ async def lifespan(app: FastAPI):
     conn = get_db()
     if conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT msg_id FROM exceptions WHERE status = 'pending'")
-            pending = [row[0] for row in cur.fetchall()]
-        for msg_id in pending:
-            _precheck_queue.put_nowait(msg_id)
-        if pending:
-            logger.info("Enqueued %d pending exceptions for pre-check", len(pending))
+            # Reset stuck 'investigating' exceptions so the worker picks them up again
+            cur.execute(
+                "UPDATE exceptions SET status='pending' WHERE status='investigating'"
+            )
+            cur.execute(
+                "SELECT msg_id, precheck_summary FROM exceptions WHERE status = 'pending'"
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        for msg_id, precheck_summary in rows:
+            if precheck_summary:
+                _auto_investigate_queue.put_nowait(msg_id)
+            else:
+                _precheck_queue.put_nowait(msg_id)
+        if rows:
+            logger.info(
+                "Startup: enqueued %d exceptions (%d need precheck)",
+                len(rows),
+                sum(1 for _, ps in rows if not ps),
+            )
 
-    worker = asyncio.create_task(_precheck_worker())
+    precheck_worker = asyncio.create_task(_precheck_worker())
+    auto_investigate_worker = asyncio.create_task(_auto_investigate_worker())
     yield
-    worker.cancel()
-    try:
-        await worker
-    except asyncio.CancelledError:
-        pass
+    for task in (precheck_worker, auto_investigate_worker):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 from agents.graph import build_graph, make_llm as _make_llm
@@ -170,6 +186,7 @@ _llm = None
 _investigation_graph = None
 
 _precheck_queue: asyncio.Queue = asyncio.Queue()
+_auto_investigate_queue: asyncio.Queue = asyncio.Queue()
 
 
 def get_graph():
@@ -282,6 +299,7 @@ async def _run_precheck(tx_id: str) -> None:
             ))
         conn.commit()
         logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
+        _auto_investigate_queue.put_nowait(tx_id)
 
     except Exception:
         with conn.cursor() as cur:
@@ -303,6 +321,136 @@ async def _precheck_worker() -> None:
             logger.error("Pre-check failed for %s: %s", tx_id, exc)
         finally:
             _precheck_queue.task_done()
+
+
+async def _run_full_investigation_bg(tx_id: str) -> None:
+    """Run the full investigation graph in the background, store results in DB."""
+    from routers.exceptions import _normalize_lg_event
+
+    conn = get_db()
+    if not conn:
+        logger.warning("Auto-investigation skipped %s — no DB connection", tx_id)
+        return
+
+    if tx_id.startswith("TX-"):
+        try:
+            id_val = int(tx_id[3:])
+            id_clause = "p.id = %s"
+        except ValueError:
+            return
+    else:
+        id_val = tx_id
+        id_clause = "e.msg_id = %s"
+
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT e.id, e.detected_errors, p.id AS pid,
+                   p.msg_id, p.uetr, p.amount, p.currency,
+                   p.sender_bic, p.receiver_bic,
+                   p.debtor_bic, p.creditor_bic, p.debtor_name, p.debtor_iban,
+                   p.creditor_name, p.creditor_iban, p.raw_xml
+            FROM exceptions e
+            LEFT JOIN payments p ON p.msg_id = e.msg_id
+            WHERE {id_clause} AND e.status = 'pending'
+        """, (id_val,))
+        row = cur.fetchone()
+
+    if not row:
+        return  # already being investigated or not found
+
+    (exc_id, detected_errors, pid, p_msg_id, uetr, amount, currency,
+     sender_bic, receiver_bic, debtor_bic, creditor_bic,
+     debtor_name, debtor_iban, creditor_name, creditor_iban, raw_xml) = row
+
+    exc_msg_id = p_msg_id or tx_id
+    errors = detected_errors if isinstance(detected_errors, list) else []
+    payment = {
+        "id": pid, "msg_id": p_msg_id, "uetr": uetr,
+        "amount": str(amount) if amount else "0", "currency": currency or "",
+        "sender_bic": sender_bic, "receiver_bic": receiver_bic,
+        "debtor_bic": debtor_bic, "creditor_bic": creditor_bic,
+        "debtor_name": debtor_name, "debtor_iban": debtor_iban,
+        "creditor_name": creditor_name, "creditor_iban": creditor_iban,
+    }
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO investigations (exception_id, msg_id, steps) VALUES (%s, %s, '[]') RETURNING id",
+            (exc_id, exc_msg_id),
+        )
+        inv_id = cur.fetchone()[0]
+        cur.execute("UPDATE exceptions SET status='investigating' WHERE id=%s", (exc_id,))
+    conn.commit()
+
+    initial_state = {
+        "payment": payment, "detected_errors": errors, "swift_message": raw_xml or "",
+        "intake_classification": {}, "investigation_context": {},
+        "technical_findings": None, "compliance_findings": None,
+        "recommendation": None, "steps": [], "investigation_id": inv_id, "msg_id": exc_msg_id,
+    }
+
+    accumulated_steps, final_state = [], {}
+    total_input_tokens = total_output_tokens = 0
+
+    try:
+        async for event in get_graph().astream_events(initial_state, version="v2"):
+            sse = _normalize_lg_event(event)
+            if sse:
+                accumulated_steps.append({**sse, "ts": datetime.now(timezone.utc).isoformat()})
+
+            if event.get("event") == "on_chat_model_end":
+                output = event.get("data", {}).get("output")
+                if output is not None:
+                    meta = getattr(output, "usage_metadata", None)
+                    if isinstance(meta, dict):
+                        total_input_tokens += meta.get("input_tokens", 0)
+                        total_output_tokens += meta.get("output_tokens", 0)
+
+            if event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
+                final_state = event.get("data", {}).get("output", {})
+
+        recommendation = final_state.get("recommendation") or {}
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE investigations
+                SET steps=%s, findings=%s, recommendation=%s,
+                    approval_status='pending', completed_at=NOW(),
+                    input_tokens=%s, output_tokens=%s
+                WHERE id=%s
+            """, (
+                json.dumps(accumulated_steps),
+                json.dumps({
+                    "technical": final_state.get("technical_findings"),
+                    "compliance": final_state.get("compliance_findings"),
+                }),
+                json.dumps(recommendation),
+                total_input_tokens, total_output_tokens, inv_id,
+            ))
+            cur.execute("""
+                UPDATE exceptions SET status='awaiting_approval', recommendation=%s,
+                    recommended_sql=%s WHERE id=%s
+            """, (json.dumps(recommendation), recommendation.get("sql"), exc_id))
+        conn.commit()
+        logger.info("Auto-investigation complete: %s (inv=%d)", tx_id, inv_id)
+
+    except Exception as exc:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE exceptions SET status='pending' WHERE id=%s", (exc_id,))
+        conn.commit()
+        logger.error("Auto-investigation failed for %s: %s", tx_id, exc)
+        raise
+
+
+async def _auto_investigate_worker() -> None:
+    """Drain the auto-investigation queue indefinitely (one at a time)."""
+    while True:
+        tx_id = await _auto_investigate_queue.get()
+        try:
+            await _run_full_investigation_bg(tx_id)
+        except Exception as exc:
+            logger.error("Auto-investigation error for %s: %s", tx_id, exc)
+        finally:
+            _auto_investigate_queue.task_done()
 
 
 app = FastAPI(title="PayInvestigator", lifespan=lifespan)

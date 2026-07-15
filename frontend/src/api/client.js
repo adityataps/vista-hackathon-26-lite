@@ -61,6 +61,9 @@ export const getAiStats = () => getJson('/api/metrics/ai', mock.aiStats);
 export const getExceptions = (status = 'active') =>
   getJson(`/api/exceptions?status=${status}`, mock.exceptionQueue);
 
+export const getInvestigationReport = (txId) =>
+  getJson(`/api/exceptions/${txId}/report`, null);
+
 /**
  * Streams an agent investigation.
  * Tries the backend SSE endpoint first; falls back to replaying the

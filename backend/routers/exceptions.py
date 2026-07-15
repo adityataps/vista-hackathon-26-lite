@@ -154,7 +154,14 @@ def _normalize_lg_event(event: dict) -> dict | None:
         chunk = event.get("data", {}).get("chunk")
         text = ""
         if chunk and hasattr(chunk, "content"):
-            text = chunk.content if isinstance(chunk.content, str) else ""
+            content = chunk.content
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "".join(
+                    block.get("text", "") if isinstance(block, dict) else ""
+                    for block in content
+                )
         if not text:
             return None
         agent_name, cls = NODE_META.get(node, ("Agent", "agent"))
@@ -342,3 +349,59 @@ async def investigate(tx_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/api/exceptions/{tx_id}/report")
+def get_investigation_report(tx_id: str):
+    """Return the most recent completed investigation for an exception."""
+    conn = get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+
+    if tx_id.startswith("TX-"):
+        try:
+            id_val = int(tx_id[3:])
+            id_clause = "p.id = %s"
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid TX-id format")
+    else:
+        id_clause = "e.msg_id = %s"
+        id_val = tx_id
+
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT i.id, i.steps, i.recommendation, i.approval_status, i.completed_at
+            FROM investigations i
+            JOIN exceptions e ON e.id = i.exception_id
+            LEFT JOIN payments p ON p.msg_id = e.msg_id
+            WHERE {id_clause} AND i.completed_at IS NOT NULL
+            ORDER BY i.created_at DESC
+            LIMIT 1
+        """, (id_val,))
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No completed investigation found")
+
+    inv_id, steps, recommendation, approval_status, completed_at = row
+    steps_list = steps if isinstance(steps, list) else []
+
+    # Merge consecutive same-agent text chunks (mirrors frontend accumulation)
+    merged = []
+    for step in steps_list:
+        if step.get("cls") == "tool":
+            merged.append(step)
+        else:
+            last = merged[-1] if merged else None
+            if last and last.get("agent") == step.get("agent") and last.get("cls") == step.get("cls"):
+                merged[-1] = {**last, "text": last["text"] + step["text"]}
+            else:
+                merged.append(step)
+
+    return {
+        "report_id": f"RPT-{inv_id:04d}",
+        "steps": merged,
+        "recommendation": recommendation if isinstance(recommendation, dict) else {},
+        "approval_status": approval_status,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+    }

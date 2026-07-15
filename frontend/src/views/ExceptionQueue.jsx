@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { getExceptions, streamInvestigation, submitDecision, sendChat } from '../api/client.js';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { getExceptions, getInvestigationReport, streamInvestigation, submitDecision, sendChat } from '../api/client.js';
+
+function Md({ children }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>;
+}
 
 const TYPE_PILL = {
   iban: 'blue', sanctions: 'red', iso: 'blue', fx: 'yellow', duplicate: 'gray',
@@ -44,9 +50,64 @@ export default function ExceptionQueue() {
   const cancelRef = useRef(null);
   const streamRef = useRef(null);
   const chatEndRef = useRef(null);
+  const seenTxIdsRef = useRef(new Set());
+  const runningRef = useRef(false);
+
+  function loadStoredReport(row) {
+    getInvestigationReport(row.tx_id).then(({ data }) => {
+      if (!data) return;
+      setLines(data.steps || []);
+      setReport({ report_id: data.report_id, recommendation: data.recommendation });
+      runningRef.current = false;
+      setRunning(false);
+    });
+  }
+
+  function investigate(row) {
+    cancelRef.current?.();
+    setSelected(row);
+    setLines([]);
+    setReport(null);
+    setDecision(null);
+    setChat([]);
+
+    const done = ['awaiting_approval', 'resolved', 'rejected'];
+    if (done.includes(row.status)) {
+      runningRef.current = false;
+      setRunning(false);
+      loadStoredReport(row);
+      return;
+    }
+
+    if (row.status === 'investigating') {
+      runningRef.current = true;
+      setRunning(true);
+      setLines([{ agent: 'System', cls: 'intake', text: 'Investigation running in background — waiting for results…' }]);
+      // Poll until complete; the 5s queue poll will update `queue`, which triggers
+      // a re-render; if the user clicks again the done branch above will fire.
+      return;
+    }
+
+    // pending / evaluating — backend will pick it up automatically
+    setLines([{ agent: 'System', cls: 'intake', text: 'Queued for investigation — results will appear here when ready.' }]);
+    runningRef.current = false;
+    setRunning(false);
+  }
 
   function fetchQueue() {
-    getExceptions('active').then(({ data }) => setQueue(data));
+    getExceptions('active').then(({ data }) => {
+      setQueue(data);
+      // If a selected exception just finished, load its report automatically
+      setSelected((prev) => {
+        if (!prev) return prev;
+        const updated = data.find((r) => r.tx_id === prev.tx_id);
+        if (updated && ['awaiting_approval', 'resolved', 'rejected'].includes(updated.status)
+            && !['awaiting_approval', 'resolved', 'rejected'].includes(prev.status)) {
+          loadStoredReport(updated);
+        }
+        return updated ?? prev;
+      });
+    });
   }
 
   useEffect(() => {
@@ -62,21 +123,6 @@ export default function ExceptionQueue() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat]);
-
-  function investigate(row) {
-    cancelRef.current?.();
-    setSelected(row);
-    setLines([]);
-    setReport(null);
-    setDecision(null);
-    setChat([]);
-    setRunning(true);
-    cancelRef.current = streamInvestigation(
-      row.tx_id,
-      (evt) => setLines((prev) => [...prev, evt]),
-      (final) => { setRunning(false); setReport(final); }
-    );
-  }
 
   async function decide(kind) {
     if (!report) return;
@@ -170,7 +216,9 @@ export default function ExceptionQueue() {
             {lines.map((l, i) => (
               <div className="stream-line" key={i}>
                 <span className={`agent ${l.cls}`}>{l.agent === 'tool' ? '' : `${l.agent}:`}</span>
-                <span className="txt">{l.text}</span>
+                {l.cls === 'tool'
+                  ? <span className="txt">{l.text}</span>
+                  : <div className="txt md"><Md>{l.text}</Md></div>}
               </div>
             ))}
             {running && <span className="cursor" />}
@@ -212,7 +260,7 @@ export default function ExceptionQueue() {
                       <div className={`msg-row ${m.role}`} key={i}>
                         <div className="msg-bubble">
                           {m.tool && <span className="tool-note">🔧 [calls {m.tool}]</span>}
-                          {m.role === 'bot' ? '🤖 ' : ''}{m.text}
+                          {m.role === 'bot' ? <Md>{'🤖 ' + m.text}</Md> : m.text}
                         </div>
                       </div>
                     ))}

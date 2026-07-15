@@ -130,16 +130,48 @@ tr.selected td { background: rgba(79,142,247,0.12); }
 .stream {
   background: #0a101d; border: 1px solid var(--border); border-radius: 10px;
   padding: 14px; font-family: var(--mono); font-size: 12.5px;
-  max-height: 340px; overflow-y: auto;
+  max-height: 520px; overflow-y: auto;
 }
-.stream-line { display: flex; gap: 10px; padding: 5px 0; line-height: 1.5; }
-.stream-line .agent { color: var(--accent); font-weight: 700; white-space: nowrap; }
+.stream-line { display: flex; gap: 10px; padding: 5px 0; line-height: 1.5; min-width: 0; }
+.stream-line .agent { color: var(--accent); font-weight: 700; white-space: nowrap; flex-shrink: 0; }
 .stream-line .agent.compliance { color: #c084fc; }
 .stream-line .agent.technical { color: #2dd4bf; }
 .stream-line .agent.resolution { color: var(--yellow); }
 .stream-line .agent.tool { color: var(--muted); }
-.stream-line .txt { color: #c8d4ea; }
+.stream-line .txt { color: #c8d4ea; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.stream-line .txt.md { flex: 1; min-width: 0; overflow-x: auto; }
 .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent); animation: blink 1s infinite; vertical-align: text-bottom; }
+
+/* ---------- Markdown rendering ---------- */
+.md, .msg-bubble { line-height: 1.6; }
+.md p, .msg-bubble p { margin: 0 0 6px; }
+.md p:last-child, .msg-bubble p:last-child { margin-bottom: 0; }
+.md ul, .md ol, .msg-bubble ul, .msg-bubble ol { margin: 4px 0 6px 18px; padding: 0; }
+.md li, .msg-bubble li { margin-bottom: 2px; }
+.md strong, .msg-bubble strong { color: #e2eaf8; font-weight: 700; }
+.md em, .msg-bubble em { color: #a5b4fc; }
+.md code, .msg-bubble code {
+  font-family: var(--mono); font-size: 0.9em;
+  background: rgba(255,255,255,0.07); border-radius: 3px; padding: 1px 5px;
+}
+.md pre, .msg-bubble pre {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0;
+}
+.md pre code, .msg-bubble pre code { background: none; padding: 0; }
+.md h1,.md h2,.md h3 { color: #e2eaf8; font-weight: 700; margin: 8px 0 4px; }
+.md h1 { font-size: 1.1em; } .md h2 { font-size: 1em; } .md h3 { font-size: 0.95em; }
+.md table, .msg-bubble table {
+  border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 0.9em;
+}
+.md th, .msg-bubble th {
+  background: rgba(255,255,255,0.06); color: #e2eaf8;
+  padding: 5px 10px; text-align: left; border: 1px solid var(--border);
+}
+.md td, .msg-bubble td {
+  padding: 4px 10px; border: 1px solid var(--border); color: #c8d4ea;
+}
+.md tr:nth-child(even), .msg-bubble tr:nth-child(even) { background: rgba(255,255,255,0.02); }
 @keyframes blink { 50% { opacity: 0; } }
 
 .hitl {
@@ -158,7 +190,7 @@ tr.selected td { background: rgba(79,142,247,0.12); }
 .msg-row.user { justify-content: flex-end; }
 .msg-bubble {
   max-width: 78%; padding: 10px 14px; border-radius: 12px; line-height: 1.55; font-size: 13.5px;
-  white-space: pre-wrap;
+  overflow-wrap: anywhere; word-break: break-word; overflow-x: auto;
 }
 .msg-row.user .msg-bubble { background: var(--accent); color: white; border-bottom-right-radius: 4px; }
 .msg-row.bot .msg-bubble { background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
