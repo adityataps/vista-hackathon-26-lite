@@ -5,10 +5,14 @@ from datetime import datetime, timezone
 
 import yaml
 from langchain_aws import ChatBedrockConverse as ChatBedrock
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from agents.state import InvestigationState
 from agents.tools.payment_tools import get_resolution_history
+from agents.tools.knowledge_base_tool import search_knowledge_base
+
+TOOLS = [search_knowledge_base]
+TOOL_MAP = {t.name: t for t in TOOLS}
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +20,12 @@ SYSTEM = """You are the Resolution Agent for a payment exception investigation s
 You synthesise findings from specialist agents and produce a single clear recommendation
 for the human analyst.
 
-Your output must be a JSON object with exactly these keys:
+You have access to a knowledge base tool (search_knowledge_base) containing SWIFT guidelines,
+error resolution procedures, sanctions screening policy, and SLA escalation rules.
+Use it to look up the correct remediation procedure for the detected error codes before
+forming your recommendation.
+
+Your final output must be a JSON object with exactly these keys:
   action           — one sentence: what the analyst should do
   rationale        — 2-3 sentences: why, citing specific evidence from the investigation
   confidence       — a float 0.0–1.0
@@ -108,8 +117,31 @@ async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
         "(if a safe auto-fix SQL statement applies)."
     )
 
+    steps = list(state.get("steps", []))
+    messages = [SystemMessage(content=SYSTEM), HumanMessage(content=prompt)]
+    llm_with_tools = llm.bind_tools(TOOLS)
+
     try:
-        response = await llm.ainvoke([SystemMessage(content=SYSTEM), HumanMessage(content=prompt)])
+        for _ in range(4):
+            response = await llm_with_tools.ainvoke(messages)
+            messages.append(response)
+
+            if not response.tool_calls:
+                break
+
+            for tc in response.tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                args_str = ", ".join(f"{k}={repr(v)}" for k, v in tool_args.items())
+                ts = datetime.now(timezone.utc).isoformat()
+                steps.append({"agent": "tool", "cls": "tool", "text": f"🔧 {tool_name}({args_str})", "ts": ts})
+
+                tool_fn = TOOL_MAP.get(tool_name)
+                result = tool_fn.invoke(tool_args) if tool_fn else json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+                steps.append({"agent": "tool", "cls": "tool", "text": f"↳ {str(result)[:200]}", "ts": ts})
+                messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+
         content = response.content
         if isinstance(content, list):
             content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
@@ -131,14 +163,14 @@ async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
     recommendation.setdefault("requires_human_approval", True)
 
     ts = datetime.now(timezone.utc).isoformat()
-    step = {
+    steps.append({
         "agent": "Resolution Agent",
         "cls": "resolution",
         "text": f"Recommendation: {recommendation.get('action', '')} (confidence {recommendation.get('confidence', 0):.0%})",
         "ts": ts,
-    }
+    })
 
     return {
         "recommendation": recommendation,
-        "steps": state.get("steps", []) + [step],
+        "steps": steps,
     }

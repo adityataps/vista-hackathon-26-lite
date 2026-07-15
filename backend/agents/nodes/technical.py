@@ -8,10 +8,11 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from agents.state import InvestigationState
 from agents.tools.technical_tools import validate_iban_tool, validate_bic_tool, check_duplicate_tool, check_fx_tool
 from agents.tools.payment_tools import get_payment_record
+from agents.tools.knowledge_base_tool import search_knowledge_base
 
 logger = logging.getLogger(__name__)
 
-TOOLS = [validate_iban_tool, validate_bic_tool, check_duplicate_tool, check_fx_tool, get_payment_record]
+TOOLS = [validate_iban_tool, validate_bic_tool, check_duplicate_tool, check_fx_tool, get_payment_record, search_knowledge_base]
 TOOL_MAP = {t.name: t for t in TOOLS}
 
 SYSTEM = """You are the Technical Diagnosis specialist for payment exceptions.

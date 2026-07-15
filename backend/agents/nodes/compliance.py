@@ -8,10 +8,11 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from agents.state import InvestigationState
 from agents.tools.compliance_tools import screen_entity_tool, check_address_completeness_tool
 from agents.tools.payment_tools import get_payment_record
+from agents.tools.knowledge_base_tool import search_knowledge_base
 
 logger = logging.getLogger(__name__)
 
-TOOLS = [screen_entity_tool, check_address_completeness_tool, get_payment_record]
+TOOLS = [screen_entity_tool, check_address_completeness_tool, get_payment_record, search_knowledge_base]
 TOOL_MAP = {t.name: t for t in TOOLS}
 
 SYSTEM = """You are the Compliance specialist for payment exceptions.
