@@ -152,6 +152,7 @@ def _normalize_lg_event(event: dict) -> dict | None:
         "technical":   ("Technical Diagnosis",  "technical"),
         "compliance":  ("Compliance Agent",     "compliance"),
         "resolution":  ("Resolution Agent",     "resolution"),
+        "report":      ("Report Agent",         "report"),
     }
 
     if kind == "on_chat_model_stream":
@@ -305,13 +306,14 @@ async def investigate(tx_id: str):
 
         recommendation = final_state.get("recommendation") or {}
         recommended_sql = recommendation.get("sql", None)
+        report_content = final_state.get("report_content")
 
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE investigations
                 SET steps=%s, findings=%s, recommendation=%s,
                     approval_status='pending', completed_at=NOW(),
-                    input_tokens=%s, output_tokens=%s
+                    input_tokens=%s, output_tokens=%s, report_content=%s
                 WHERE id=%s
             """, (
                 json.dumps(accumulated_steps),
@@ -322,6 +324,7 @@ async def investigate(tx_id: str):
                 json.dumps(recommendation),
                 total_input_tokens,
                 total_output_tokens,
+                json.dumps(report_content) if report_content else None,
                 inv_id,
             ))
             # Also populate the recommendation and recommended_sql in the exceptions table

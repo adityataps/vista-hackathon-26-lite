@@ -11,3 +11,4 @@ psycopg2-binary>=2.9
 langchain-core
 langchain-aws
 defusedxml>=0.7
+reportlab>=4.0

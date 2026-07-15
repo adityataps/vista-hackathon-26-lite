@@ -124,6 +124,7 @@ def _ensure_schema(conn):
     _run("ALTER TABLE exceptions ADD COLUMN IF NOT EXISTS recommended_sql TEXT")
     _run("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0")
     _run("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0")
+    _run("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS report_content JSONB")
 
     # Incremental step table for live SSE streaming
     _run("""

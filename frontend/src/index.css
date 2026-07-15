@@ -137,7 +137,8 @@ tr.selected td { background: rgba(79,142,247,0.12); }
 .stream-line .agent.compliance { color: #c084fc; }
 .stream-line .agent.technical { color: #2dd4bf; }
 .stream-line .agent.resolution { color: var(--yellow); }
-.stream-line .agent.tool { color: var(--muted); }
+.stream-line .agent.tool   { color: var(--muted); }
+.stream-line .agent.report { color: #a78bfa; }
 .stream-line .txt { color: #c8d4ea; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .stream-line .txt.md { flex: 1; min-width: 0; overflow-x: auto; }
 .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent); animation: blink 1s infinite; vertical-align: text-bottom; }

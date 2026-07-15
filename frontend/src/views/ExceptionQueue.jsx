@@ -412,6 +412,19 @@ export default function ExceptionQueue() {
                 {running && <span className="cursor" />}
               </div>
 
+              {report?.report_id && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <a
+                    href={`/api/reports/${report.report_id}/pdf`}
+                    download={`${report.report_id}.pdf`}
+                    className="btn"
+                    style={{ fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    📄 Download PDF Report
+                  </a>
+                </div>
+              )}
+
               {report?.recommendation && (
                 <div className={`hitl ${decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : ''}`}>
                   <div className="msg">

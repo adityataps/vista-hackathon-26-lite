@@ -467,12 +467,13 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
 
         _inc_flush()  # write any remaining buffered agent text
         recommendation = final_state.get("recommendation") or {}
+        report_content = final_state.get("report_content")
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE investigations
                 SET steps=%s, findings=%s, recommendation=%s,
                     approval_status='pending', completed_at=NOW(),
-                    input_tokens=%s, output_tokens=%s
+                    input_tokens=%s, output_tokens=%s, report_content=%s
                 WHERE id=%s
             """, (
                 json.dumps(accumulated_steps),
@@ -481,7 +482,9 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
                     "compliance": final_state.get("compliance_findings"),
                 }),
                 json.dumps(recommendation),
-                total_input_tokens, total_output_tokens, inv_id,
+                total_input_tokens, total_output_tokens,
+                json.dumps(report_content) if report_content else None,
+                inv_id,
             ))
             cur.execute("""
                 UPDATE exceptions SET status='awaiting_approval', recommendation=%s,

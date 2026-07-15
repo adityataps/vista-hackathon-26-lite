@@ -10,6 +10,7 @@ from agents.nodes.dispatch import dispatch_node
 from agents.nodes.technical import technical_node
 from agents.nodes.compliance import compliance_node
 from agents.nodes.resolution import resolution_node
+from agents.nodes.report import report_node
 
 
 def build_graph(llm: ChatBedrock):
@@ -23,12 +24,14 @@ def build_graph(llm: ChatBedrock):
     async def _technical(s): return await technical_node(s, llm)
     async def _compliance(s): return await compliance_node(s, llm)
     async def _resolution(s): return await resolution_node(s, llm)
+    async def _report(s): return await report_node(s, llm)
 
     builder.add_node("intake", _intake)
     builder.add_node("investigate", _investigate)
     builder.add_node("technical", _technical)
     builder.add_node("compliance", _compliance)
     builder.add_node("resolution", _resolution)
+    builder.add_node("report", _report)
 
     builder.add_edge(START, "intake")
     builder.add_edge("intake", "investigate")
@@ -36,7 +39,8 @@ def build_graph(llm: ChatBedrock):
     builder.add_conditional_edges("investigate", dispatch_node)
     builder.add_edge("technical", "resolution")
     builder.add_edge("compliance", "resolution")
-    builder.add_edge("resolution", END)
+    builder.add_edge("resolution", "report")
+    builder.add_edge("report", END)
 
     return builder.compile()
 
