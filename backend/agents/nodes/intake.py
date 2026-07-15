@@ -32,6 +32,14 @@ async def intake_node(state: InvestigationState, llm: ChatBedrock) -> dict:
     ts = datetime.now(timezone.utc).isoformat()
     step = {"agent": "Intake Agent", "cls": "intake", "text": classification_text, "ts": ts}
 
+    usage = {}
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        usage = {
+            "input_tokens": response.usage_metadata.get("input_tokens", 0),
+            "output_tokens": response.usage_metadata.get("output_tokens", 0),
+            "total_tokens": response.usage_metadata.get("total_tokens", 0),
+        }
+
     return {
         "intake_classification": {
             "error_categories": list(categories),
@@ -39,4 +47,5 @@ async def intake_node(state: InvestigationState, llm: ChatBedrock) -> dict:
             "needs_compliance": needs_compliance,
         },
         "steps": state.get("steps", []) + [step],
+        "usage_metadata": usage,
     }

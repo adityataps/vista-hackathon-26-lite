@@ -11,7 +11,7 @@ class InvestigationState(TypedDict):
     compliance_findings: Optional[dict]
     recommendation: Optional[dict] # {action, rationale, confidence}
     steps: list                    # append-only [{agent, cls, text, ts}]
-    investigation_id: int
+    investigation_id: Optional[int]
     msg_id: str
 
 
