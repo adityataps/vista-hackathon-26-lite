@@ -82,6 +82,9 @@ export default function ExceptionQueue() {
     if (row.status === 'investigating' || row.status === 'evaluating') {
       runningRef.current = true;
       setRunning(true);
+      if (row.status === 'evaluating') {
+        setLines([{ agent: 'System', cls: 'intake', text: 'Precheck evaluating — investigation will start shortly…' }]);
+      }
       cancelRef.current = streamLiveInvestigation(
         row.tx_id,
         (evt) => setLines((prev) => {
