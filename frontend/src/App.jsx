@@ -1,18 +1,20 @@
 import { useEffect, useState } from 'react';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import OperationsDashboard from './views/OperationsDashboard.jsx';
 import ExceptionQueue from './views/ExceptionQueue.jsx';
 import { probeBackend, getKpis, generateDemoPayments } from './api/client.js';
 
 const TABS = [
-  { id: 'dashboard', label: 'Operations Dashboard' },
-  { id: 'exceptions', label: 'Exception Queue' },
+  { id: 'dashboard', label: 'Operations Dashboard', path: '/dashboard' },
+  { id: 'exceptions', label: 'Exception Queue',     path: '/exceptions' },
 ];
 
 export default function App() {
-  const [tab, setTab] = useState('dashboard');
+  const navigate = useNavigate();
+  const location = useLocation();
   const [backendLive, setBackendLive] = useState(null);
   const [openExceptions, setOpenExceptions] = useState(0);
-  const [genState, setGenState] = useState('idle'); // idle | running | done
+  const [genState, setGenState] = useState('idle');
 
   function refreshBadge() {
     getKpis().then(({ data }) => setOpenExceptions(data.exceptions_open ?? 0));
@@ -32,6 +34,8 @@ export default function App() {
     setTimeout(() => setGenState('idle'), 3000);
   }
 
+  const activeTab = TABS.find((t) => location.pathname.startsWith(t.path))?.id ?? 'dashboard';
+
   return (
     <div className="app">
       <header className="header">
@@ -46,8 +50,8 @@ export default function App() {
           {TABS.map((t) => (
             <button
               key={t.id}
-              className={`tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
+              className={`tab ${activeTab === t.id ? 'active' : ''}`}
+              onClick={() => navigate(t.path)}
             >
               {t.label}
               {t.id === 'exceptions' && openExceptions > 0 && (
@@ -73,8 +77,11 @@ export default function App() {
       </header>
 
       <main className="main">
-        {tab === 'dashboard' && <OperationsDashboard />}
-        {tab === 'exceptions' && <ExceptionQueue />}
+        <Routes>
+          <Route path="/" element={<Navigate replace to="/dashboard" />} />
+          <Route path="/dashboard" element={<OperationsDashboard />} />
+          <Route path="/exceptions" element={<ExceptionQueue />} />
+        </Routes>
       </main>
     </div>
   );
