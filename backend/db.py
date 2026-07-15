@@ -14,8 +14,12 @@ def get_db():
         return None
     try:
         if _db_conn is None or _db_conn.closed:
-            _db_conn = psycopg2.connect(os.environ["DATABASE_URL"])
-            _ensure_schema(_db_conn)
+            _db_conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+            try:
+                _ensure_schema(_db_conn)
+            except Exception as schema_exc:
+                logger.warning("Schema migration skipped (lock contention?): %s", schema_exc)
+                _db_conn.rollback()
     except Exception as exc:
         logger.warning("DB connect failed: %s", exc)
         return None
@@ -24,6 +28,7 @@ def get_db():
 
 def _ensure_schema(conn):
     with conn.cursor() as cur:
+        cur.execute("SET lock_timeout = '5s'")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payment_events (
                 id            SERIAL PRIMARY KEY,

@@ -1,11 +1,8 @@
 import json
 import logging
-import os
-import re
 
 from fastapi import APIRouter, HTTPException
-from langchain_aws import ChatBedrock
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
 from db import get_db
@@ -109,9 +106,11 @@ class ChatRequest(BaseModel):
 
 
 CHAT_SYSTEM = """You are a payment investigation assistant. The analyst is reviewing a completed
-investigation report and asking follow-up questions. Answer concisely using only information
-from the investigation context provided. If you need to describe a tool call you would make,
-prefix it with [calls <tool_name>]."""
+investigation report and asking follow-up questions. Answer concisely using the investigation
+context provided. When you need to look up policy documents, compliance rules, SWIFT guidelines,
+or error resolution procedures, call the search_knowledge_base tool."""
+
+_KNOWN_TOOLS = {"search_knowledge_base"}
 
 
 @router.post("/api/reports/{report_id}/chat")
@@ -139,19 +138,36 @@ async def chat(report_id: str, body: ChatRequest):
         f"Recommendation:\n{json.dumps(recommendation, indent=2)}"
     )
 
-    llm = ChatBedrock(
-        model_id="anthropic.claude-sonnet-4-6",
-        region_name=os.environ.get("AWS_REGION", "us-west-2"),
-    )
-    response = await llm.ainvoke([
+    from main import get_llm
+    from agents.tools.knowledge_base_tool import search_knowledge_base
+
+    llm = get_llm().bind_tools([search_knowledge_base])
+
+    messages = [
         SystemMessage(content=CHAT_SYSTEM),
         HumanMessage(content=f"Investigation context:\n{context}\n\nAnalyst question: {body.message}"),
-    ])
+    ]
 
-    answer = response.content
     tool_used = None
-    m = re.search(r"\[calls ([^\]]+)\]", answer)
-    if m:
-        tool_used = m.group(1)
+    response = None
+
+    for _ in range(3):
+        response = await llm.ainvoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
+            break
+
+        for tc in response.tool_calls:
+            if tc["name"] in _KNOWN_TOOLS:
+                tool_used = tc["name"]
+                result = search_knowledge_base.invoke(tc["args"])
+            else:
+                result = json.dumps({"error": f"Unknown tool: {tc['name']}"})
+            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+
+    answer = response.content if response else ""
+    if isinstance(answer, list):
+        answer = " ".join(b.get("text", "") for b in answer if isinstance(b, dict))
 
     return {"answer": answer, "tool": tool_used}
