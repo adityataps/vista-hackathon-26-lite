@@ -18,7 +18,7 @@ resource "aws_lb_target_group" "backend" {
   health_check {
     path                = "/health"
     interval            = 10
-    healthy_threshold   = 1
+    healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
   }
@@ -35,7 +35,7 @@ resource "aws_lb_target_group" "frontend" {
   health_check {
     path                = "/"
     interval            = 10
-    healthy_threshold   = 1
+    healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
   }
