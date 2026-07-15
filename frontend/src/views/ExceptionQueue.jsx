@@ -150,6 +150,7 @@ export default function ExceptionQueue() {
     setDecision(kind);
     await submitDecision(report.report_id, kind);
     fetchQueue();
+    loadArchive();
   }
 
   async function ask(text) {
