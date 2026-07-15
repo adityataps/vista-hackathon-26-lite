@@ -128,6 +128,10 @@ def ingest_exception(req: IngestExceptionRequest):
         exception_id = cur.fetchone()[0]
     conn.commit()
     logger.info("Exception created/updated: id=%s msg_id=%s", exception_id, req.msg_id)
+
+    from main import _precheck_queue
+    _precheck_queue.put_nowait(req.msg_id)
+
     return {"exception_id": exception_id}
 
 

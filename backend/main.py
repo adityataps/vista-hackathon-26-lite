@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -107,6 +108,8 @@ def _seed_write_db(conn, messages: list, s3_prefix: str):
                         updated_at = NOW()
                 """, (msg["msg_id"], msg["uetr"], json.dumps(detected), payment_id))
         conn.commit()
+        if msg["is_faulty"]:
+            _precheck_queue.put_nowait(msg["msg_id"])
 
 
 def _write_events(conn, messages):
@@ -137,14 +140,33 @@ def _write_events(conn, messages):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_db()  # opens connection + runs _ensure_schema if DATABASE_URL is set
+    get_graph()  # warms _llm and _investigation_graph
+
+    conn = get_db()
+    if conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT msg_id FROM exceptions WHERE status = 'pending'")
+            pending = [row[0] for row in cur.fetchall()]
+        for msg_id in pending:
+            _precheck_queue.put_nowait(msg_id)
+        if pending:
+            logger.info("Enqueued %d pending exceptions for pre-check", len(pending))
+
+    worker = asyncio.create_task(_precheck_worker())
     yield
+    worker.cancel()
+    try:
+        await worker
+    except asyncio.CancelledError:
+        pass
 
 
 from agents.graph import build_graph, make_llm as _make_llm
 
 _llm = None
 _investigation_graph = None
+
+_precheck_queue: asyncio.Queue = asyncio.Queue()
 
 
 def get_graph():
@@ -153,6 +175,120 @@ def get_graph():
         _llm = _make_llm()
         _investigation_graph = build_graph(_llm)
     return _investigation_graph
+
+
+def get_llm():
+    get_graph()  # ensures _llm is initialised
+    return _llm
+
+
+async def _run_precheck(tx_id: str) -> None:
+    """Run intake-only triage for a single exception. Sets evaluating → pending."""
+    conn = get_db()
+    if not conn:
+        logger.warning("Pre-check skipped %s — no DB connection", tx_id)
+        return
+
+    if tx_id.startswith("TX-"):
+        try:
+            id_val = int(tx_id[3:])
+            id_clause = "p.id = %s"
+        except ValueError:
+            return
+    else:
+        id_val = tx_id
+        id_clause = "e.msg_id = %s"
+
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT e.id, e.detected_errors, p.id AS pid,
+                   p.msg_id, p.uetr, p.amount, p.currency,
+                   p.sender_bic, p.receiver_bic,
+                   p.debtor_bic, p.creditor_bic, p.debtor_name, p.debtor_iban,
+                   p.creditor_name, p.creditor_iban, p.raw_xml
+            FROM exceptions e
+            LEFT JOIN payments p ON p.msg_id = e.msg_id
+            WHERE {id_clause} AND e.status = 'pending'
+        """, (id_val,))
+        row = cur.fetchone()
+
+    if not row:
+        return  # already evaluated or not found
+
+    (exc_id, detected_errors, pid, p_msg_id, uetr, amount, currency,
+     sender_bic, receiver_bic, debtor_bic, creditor_bic,
+     debtor_name, debtor_iban, creditor_name, creditor_iban, raw_xml) = row
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE exceptions SET status='evaluating', updated_at=NOW() WHERE id=%s", (exc_id,)
+        )
+    conn.commit()
+
+    errors = detected_errors if isinstance(detected_errors, list) else []
+    initial_state = {
+        "payment": {
+            "id": pid, "msg_id": p_msg_id, "uetr": uetr,
+            "amount": str(amount) if amount else "0", "currency": currency or "",
+            "sender_bic": sender_bic, "receiver_bic": receiver_bic,
+            "debtor_bic": debtor_bic, "creditor_bic": creditor_bic,
+            "debtor_name": debtor_name, "debtor_iban": debtor_iban,
+            "creditor_name": creditor_name, "creditor_iban": creditor_iban,
+        },
+        "detected_errors": errors,
+        "swift_message": raw_xml or "",
+        "intake_classification": {},
+        "investigation_context": {},
+        "technical_findings": None,
+        "compliance_findings": None,
+        "recommendation": None,
+        "steps": [],
+        "investigation_id": None,
+        "msg_id": p_msg_id or "",
+    }
+
+    from agents.nodes.intake import intake_node
+    result = await intake_node(initial_state, get_llm())
+
+    usage = result.get("usage_metadata", {})
+    intake_cls = result.get("intake_classification", {})
+    steps = result.get("steps", [])
+    precheck_summary = {
+        "needs_technical": intake_cls.get("needs_technical", False),
+        "needs_compliance": intake_cls.get("needs_compliance", False),
+        "action_hint": steps[0]["text"] if steps else "",
+        "error_categories": intake_cls.get("error_categories", []),
+    }
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE exceptions
+            SET status='pending',
+                precheck_summary=%s,
+                precheck_input_tokens=%s,
+                precheck_output_tokens=%s,
+                updated_at=NOW()
+            WHERE id=%s
+        """, (
+            json.dumps(precheck_summary),
+            usage.get("input_tokens", 0),
+            usage.get("output_tokens", 0),
+            exc_id,
+        ))
+    conn.commit()
+    logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
+
+
+async def _precheck_worker() -> None:
+    """Drain the precheck queue indefinitely."""
+    while True:
+        tx_id = await _precheck_queue.get()
+        try:
+            await _run_precheck(tx_id)
+        except Exception as exc:
+            logger.error("Pre-check failed for %s: %s", tx_id, exc)
+        finally:
+            _precheck_queue.task_done()
 
 
 app = FastAPI(title="PayInvestigator", lifespan=lifespan)
