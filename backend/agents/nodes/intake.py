@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrockConverse as ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.state import InvestigationState, ERROR_CATEGORY_MAP, TECHNICAL_CATEGORIES, COMPLIANCE_CATEGORIES

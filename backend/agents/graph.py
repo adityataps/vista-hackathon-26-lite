@@ -1,6 +1,6 @@
 import os
 
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrockConverse as ChatBedrock
 from langgraph.graph import StateGraph, START, END
 
 from agents.state import InvestigationState
@@ -45,7 +45,7 @@ def make_llm() -> ChatBedrock:
     return ChatBedrock(
         model_id=os.environ.get(
             "BEDROCK_MODEL_ID",
-            "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "anthropic.claude-sonnet-4-6",
         ),
         region_name=os.environ.get("AWS_REGION", "us-west-2"),
     )

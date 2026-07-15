@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone
 
 import yaml
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrockConverse as ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.state import InvestigationState
