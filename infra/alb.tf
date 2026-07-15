@@ -8,32 +8,34 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "backend" {
-  name        = "${var.app_name}-backend"
-  port        = 8080
-  protocol    = "HTTP"
-  vpc_id      = data.aws_vpc.default.id
-  target_type = "ip"
+  name                 = "${var.app_name}-backend"
+  port                 = 8080
+  protocol             = "HTTP"
+  vpc_id               = data.aws_vpc.default.id
+  target_type          = "ip"
+  deregistration_delay = 30
 
   health_check {
     path                = "/health"
-    interval            = 30
-    healthy_threshold   = 2
+    interval            = 10
+    healthy_threshold   = 1
     unhealthy_threshold = 3
     timeout             = 5
   }
 }
 
 resource "aws_lb_target_group" "frontend" {
-  name        = "${var.app_name}-frontend"
-  port        = 80
-  protocol    = "HTTP"
-  vpc_id      = data.aws_vpc.default.id
-  target_type = "ip"
+  name                 = "${var.app_name}-frontend"
+  port                 = 80
+  protocol             = "HTTP"
+  vpc_id               = data.aws_vpc.default.id
+  target_type          = "ip"
+  deregistration_delay = 30
 
   health_check {
     path                = "/"
-    interval            = 30
-    healthy_threshold   = 2
+    interval            = 10
+    healthy_threshold   = 1
     unhealthy_threshold = 3
     timeout             = 5
   }
