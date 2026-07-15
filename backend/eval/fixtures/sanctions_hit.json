@@ -1,0 +1,39 @@
+{
+  "_meta": {
+    "scenario": "sanctions_hit",
+    "expected_routing": { "needs_technical": false, "needs_compliance": true },
+    "required_keywords": ["hold", "sanction"],
+    "min_confidence": 0.80
+  },
+  "payment": {
+    "msg_id": "EVAL-SANC-001",
+    "amount": 250000.00,
+    "currency": "USD",
+    "sender_bic": "BARCGB22",
+    "receiver_bic": "DEUTDEDB",
+    "debtor_bic": "BARCGB22",
+    "creditor_bic": "DEUTDEDB",
+    "debtor_name": "Barclays Client UK",
+    "debtor_iban": "GB82WEST12345698765432",
+    "creditor_name": "Novaya Star Shipping",
+    "creditor_iban": "DE89370400440532013000",
+    "is_faulty": true,
+    "ingested_at": "2026-07-14T08:05:00Z"
+  },
+  "detected_errors": [
+    {
+      "code": "BENEFICIARY_NAME_INCOMPLETE",
+      "field": "creditor_name",
+      "value": "Novaya Star Shipping"
+    }
+  ],
+  "swift_message": "<pacs.008 stub — EVAL-SANC-001>",
+  "steps": [],
+  "investigation_id": 102,
+  "msg_id": "EVAL-SANC-001",
+  "intake_classification": {},
+  "investigation_context": {},
+  "technical_findings": null,
+  "compliance_findings": null,
+  "recommendation": null
+}

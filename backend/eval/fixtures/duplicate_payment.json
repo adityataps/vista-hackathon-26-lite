@@ -1,0 +1,40 @@
+{
+  "_meta": {
+    "scenario": "duplicate_payment",
+    "expected_routing": { "needs_technical": true, "needs_compliance": false },
+    "required_keywords": ["duplicate", "cancel"],
+    "min_confidence": 0.75
+  },
+  "payment": {
+    "msg_id": "EVAL-DUP-002",
+    "uetr": "a8f3c1d2-4e5f-6789-abcd-ef0123456789",
+    "amount": 5000.00,
+    "currency": "EUR",
+    "sender_bic": "BNPAFRPP",
+    "receiver_bic": "INGBNL2A",
+    "debtor_bic": "BNPAFRPP",
+    "creditor_bic": "INGBNL2A",
+    "debtor_name": "BNP Client FR",
+    "debtor_iban": "FR7630006000011234567890189",
+    "creditor_name": "ING Client NL",
+    "creditor_iban": "NL91ABNA0417164300",
+    "is_faulty": true,
+    "ingested_at": "2026-07-14T08:10:00Z"
+  },
+  "detected_errors": [
+    {
+      "code": "DUPLICATE_UETR",
+      "field": "uetr",
+      "value": "a8f3c1d2-4e5f-6789-abcd-ef0123456789"
+    }
+  ],
+  "swift_message": "<pacs.008 stub — EVAL-DUP-002>",
+  "steps": [],
+  "investigation_id": 103,
+  "msg_id": "EVAL-DUP-002",
+  "intake_classification": {},
+  "investigation_context": {},
+  "technical_findings": null,
+  "compliance_findings": null,
+  "recommendation": null
+}

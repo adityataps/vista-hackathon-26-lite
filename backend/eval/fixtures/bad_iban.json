@@ -1,0 +1,39 @@
+{
+  "_meta": {
+    "scenario": "bad_iban",
+    "expected_routing": { "needs_technical": true, "needs_compliance": false },
+    "required_keywords": ["IBAN", "correct", "resubmit"],
+    "min_confidence": 0.75
+  },
+  "payment": {
+    "msg_id": "EVAL-IBAN-001",
+    "amount": 10000.00,
+    "currency": "USD",
+    "sender_bic": "DEUTDEDB",
+    "receiver_bic": "NWBKGB2L",
+    "debtor_bic": "DEUTDEDB",
+    "creditor_bic": "NWBKGB2L",
+    "debtor_name": "Acme GmbH",
+    "debtor_iban": "DE89370400440532013000",
+    "creditor_name": "Thames Logistics Ltd",
+    "creditor_iban": "GB29NWBK60161331926820",
+    "is_faulty": true,
+    "ingested_at": "2026-07-14T08:00:00Z"
+  },
+  "detected_errors": [
+    {
+      "code": "IBAN_INVALID_CHECKSUM",
+      "field": "creditor_iban",
+      "value": "GB29NWBK60161331926820"
+    }
+  ],
+  "swift_message": "<pacs.008 stub — EVAL-IBAN-001>",
+  "steps": [],
+  "investigation_id": 101,
+  "msg_id": "EVAL-IBAN-001",
+  "intake_classification": {},
+  "investigation_context": {},
+  "technical_findings": null,
+  "compliance_findings": null,
+  "recommendation": null
+}
