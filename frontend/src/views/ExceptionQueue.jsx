@@ -5,7 +5,15 @@ const TYPE_PILL = {
   iban: 'blue', sanctions: 'red', iso: 'blue', fx: 'yellow', duplicate: 'gray',
 };
 
-// Keyed by type_key from GET /api/exceptions so suggestions match the actual exception
+const STATUS_PILL = {
+  pending:           { cls: 'yellow',  label: 'Pending' },
+  evaluating:        { cls: 'yellow',  label: 'Evaluating…', spinner: true },
+  investigating:     { cls: 'blue',    label: 'Investigating', spinner: true },
+  awaiting_approval: { cls: 'orange',  label: 'Awaiting Approval' },
+  resolved:          { cls: 'green',   label: 'Resolved' },
+  rejected:          { cls: 'gray',    label: 'Rejected' },
+};
+
 const SUGGESTIONS = {
   iban:      ['Why did you flag this IBAN specifically?', 'What is the corrected IBAN?', 'Are there other payments to this receiver this week?'],
   sanctions: ['Why did you recommend holding this payment?', 'Show me the full SDN entry for the match', 'Does the sender have prior compliance flags?'],
@@ -15,23 +23,36 @@ const SUGGESTIONS = {
   default:   ['Why this recommendation?', 'Show related payments from the same sender', 'What is the risk if I approve this?'],
 };
 
+function slaWarning(settlementDate) {
+  if (!settlementDate) return false;
+  const hoursUntil = (new Date(settlementDate) - Date.now()) / 3_600_000;
+  return hoursUntil >= 0 && hoursUntil <= 24;
+}
+
 export default function ExceptionQueue() {
   const [queue, setQueue] = useState([]);
   const [selected, setSelected] = useState(null);
   const [lines, setLines] = useState([]);
   const [running, setRunning] = useState(false);
-  const [report, setReport] = useState(null);   // {report_id, recommendation}
-  const [decision, setDecision] = useState(null); // 'approve' | 'reject'
+  const [report, setReport] = useState(null);
+  const [decision, setDecision] = useState(null);
   const [chat, setChat] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
+  const [archive, setArchive] = useState([]);
   const cancelRef = useRef(null);
   const streamRef = useRef(null);
   const chatEndRef = useRef(null);
 
+  function fetchQueue() {
+    getExceptions('active').then(({ data }) => setQueue(data));
+  }
+
   useEffect(() => {
-    getExceptions().then(({ data }) => setQueue(data));
-    return () => cancelRef.current?.();
+    fetchQueue();
+    const id = setInterval(fetchQueue, 5000);
+    return () => { clearInterval(id); cancelRef.current?.(); };
   }, []);
 
   useEffect(() => {
@@ -53,10 +74,7 @@ export default function ExceptionQueue() {
     cancelRef.current = streamInvestigation(
       row.tx_id,
       (evt) => setLines((prev) => [...prev, evt]),
-      (final) => {
-        setRunning(false);
-        setReport(final);
-      }
+      (final) => { setRunning(false); setReport(final); }
     );
   }
 
@@ -64,8 +82,7 @@ export default function ExceptionQueue() {
     if (!report) return;
     setDecision(kind);
     await submitDecision(report.report_id, kind);
-    // Re-fetch the queue from the API so status reflects the DB, not an optimistic guess
-    getExceptions().then(({ data }) => setQueue(data));
+    fetchQueue();
   }
 
   async function ask(text) {
@@ -79,37 +96,66 @@ export default function ExceptionQueue() {
     setChatBusy(false);
   }
 
+  async function loadArchive() {
+    const { data } = await getExceptions('resolved,rejected');
+    setArchive(data);
+    setShowArchive(true);
+  }
+
   const suggestions = selected ? (SUGGESTIONS[selected.type_key] ?? SUGGESTIONS.default) : [];
+  const pendingCount = queue.filter((r) => r.status === 'pending' || r.status === 'awaiting_approval').length;
 
   return (
     <>
       <div className="card">
         <div className="section-title" style={{ margin: '0 0 12px' }}>
           <h2 style={{ fontSize: 15 }}>Exception Queue</h2>
-          <span className="pill gray">{queue.filter((r) => r.status === 'pending').length} pending</span>
+          <span className="pill gray">{pendingCount} pending</span>
         </div>
         <table>
           <thead>
-            <tr><th>TX ID</th><th>Type</th><th>Amount</th><th>Sender → Receiver</th><th>Status</th></tr>
+            <tr>
+              <th>TX ID</th><th>Type</th><th>Amount</th>
+              <th>Sender → Receiver</th><th>Status</th>
+            </tr>
           </thead>
           <tbody>
-            {queue.map((row) => (
-              <tr
-                key={row.tx_id}
-                className={`clickable ${selected?.tx_id === row.tx_id ? 'selected' : ''}`}
-                onClick={() => investigate(row)}
-              >
-                <td className="num">{row.tx_id}</td>
-                <td><span className={`pill ${TYPE_PILL[row.type_key] ?? 'gray'}`}>{row.type}</span></td>
-                <td className="num">{row.amount}</td>
-                <td style={{ color: '#8fa1c0' }}>{row.sender} → {row.receiver}</td>
-                <td>
-                  <span className={`pill ${row.status === 'resolved' ? 'green' : 'yellow'}`}>
-                    {row.status === 'resolved' ? 'Resolved' : 'Pending'}
-                  </span>
-                </td>
-              </tr>
-            ))}
+            {queue.map((row) => {
+              const pill = STATUS_PILL[row.status] ?? STATUS_PILL.pending;
+              return (
+                <tr
+                  key={row.tx_id}
+                  className={`clickable ${selected?.tx_id === row.tx_id ? 'selected' : ''}`}
+                  onClick={() => investigate(row)}
+                >
+                  <td className="num">
+                    {row.tx_id}
+                    {slaWarning(row.settlement_date) && (
+                      <span className="pill orange" style={{ marginLeft: 6, fontSize: 10 }}>⚠ SLA</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`pill ${TYPE_PILL[row.type_key] ?? 'gray'}`}>{row.type}</span>
+                    {row.precheck_summary?.action_hint && (
+                      <div style={{ fontSize: 11, color: '#8fa1c0', marginTop: 2 }}>
+                        {row.precheck_summary.action_hint.slice(0, 80)}
+                      </div>
+                    )}
+                  </td>
+                  <td className="num">{row.amount}</td>
+                  <td style={{ color: '#8fa1c0' }}>{row.sender} → {row.receiver}</td>
+                  <td>
+                    <span className={`pill ${pill.cls}`}>
+                      {pill.spinner && <span className="spinner" style={{ marginRight: 4 }} />}
+                      {pill.label}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+            {queue.length === 0 && (
+              <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No active exceptions</td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -117,7 +163,8 @@ export default function ExceptionQueue() {
       {selected && (
         <div className="card" style={{ marginTop: 16 }}>
           <h3>
-            Agent Investigation — {selected.tx_id} {running && <span className="spinner" style={{ marginLeft: 8 }} />}
+            Agent Investigation — {selected.tx_id}
+            {running && <span className="spinner" style={{ marginLeft: 8 }} />}
           </h3>
           <div className="stream" ref={streamRef}>
             {lines.map((l, i) => (
@@ -196,6 +243,52 @@ export default function ExceptionQueue() {
           )}
         </div>
       )}
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="section-title" style={{ margin: '0 0 8px' }}>
+          <h2 style={{ fontSize: 15 }}>Resolved Cases</h2>
+          <button
+            className="btn"
+            style={{ fontSize: 12 }}
+            onClick={showArchive ? () => setShowArchive(false) : loadArchive}
+          >
+            {showArchive ? 'Hide archive' : `Show resolved (${archive.length || '…'})`}
+          </button>
+        </div>
+        {showArchive && (
+          <table>
+            <thead>
+              <tr>
+                <th>TX ID</th><th>Type</th><th>Amount</th>
+                <th>Decision</th><th>Agent Recommendation</th><th>Resolved At</th>
+              </tr>
+            </thead>
+            <tbody>
+              {archive.map((row) => (
+                <tr key={row.tx_id}>
+                  <td className="num">{row.tx_id}</td>
+                  <td><span className={`pill ${TYPE_PILL[row.type_key] ?? 'gray'}`}>{row.type}</span></td>
+                  <td className="num">{row.amount}</td>
+                  <td>
+                    <span className={`pill ${row.status === 'resolved' ? 'green' : 'gray'}`}>
+                      {row.status === 'resolved' ? 'Approved' : 'Rejected'}
+                    </span>
+                  </td>
+                  <td style={{ color: '#8fa1c0', fontSize: 12 }}>
+                    {row.recommendation_action ? row.recommendation_action.slice(0, 80) : '—'}
+                  </td>
+                  <td style={{ color: '#8fa1c0', fontSize: 12 }}>
+                    {row.resolved_at ? new Date(row.resolved_at).toLocaleString() : '—'}
+                  </td>
+                </tr>
+              ))}
+              {archive.length === 0 && (
+                <tr><td colSpan={6} style={{ textAlign: 'center', color: '#8fa1c0', padding: 16 }}>No resolved cases yet</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
     </>
   );
 }

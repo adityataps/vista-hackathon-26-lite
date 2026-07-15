@@ -139,11 +139,36 @@ export const aiStats = {
 // ---------------------------------------------------------------------------
 
 export const exceptionQueue = [
-  { tx_id: 'TX-00142', type: 'Bad IBAN', type_key: 'iban', amount: '€42,000', sender: 'Norfolk Precision Engineering Ltd', receiver: 'Hartley Components Ltd', status: 'pending' },
-  { tx_id: 'TX-00138', type: 'Sanctions hit', type_key: 'sanctions', amount: '$198,500', sender: 'Global Trade Partners LLC', receiver: 'Novaya Star Shipping', status: 'pending' },
-  { tx_id: 'TX-00136', type: 'ISO 20022 field', type_key: 'iso', amount: '¥8,400,000', sender: 'Pacific Rim Trading Co', receiver: 'Pacific Imports Inc', status: 'pending' },
-  { tx_id: 'TX-00131', type: 'FX limit breach', type_key: 'fx', amount: '$2,450,000', sender: 'Meridian Capital', receiver: 'Andes Mining SA', status: 'pending' },
-  { tx_id: 'TX-00121', type: 'Duplicate ref', type_key: 'duplicate', amount: '£7,200', sender: 'Thames Logistics', receiver: 'Clyde Freight Ltd', status: 'resolved' },
+  {
+    tx_id: 'TX-00142', type: 'Bad IBAN', type_key: 'iban', amount: '€42,000',
+    sender: 'Norfolk Precision Engineering Ltd', receiver: 'Hartley Components Ltd', status: 'pending',
+    settlement_date: null,
+    precheck_summary: { action_hint: 'IBAN checksum mismatch on creditor account. Route to Technical Diagnosis.', needs_technical: true, needs_compliance: false },
+  },
+  {
+    tx_id: 'TX-00138', type: 'Sanctions hit', type_key: 'sanctions', amount: '$198,500',
+    sender: 'Global Trade Partners LLC', receiver: 'Novaya Star Shipping', status: 'pending',
+    settlement_date: null,
+    precheck_summary: { action_hint: 'Possible SDN match on receiver entity name. Route to Compliance Agent.', needs_technical: false, needs_compliance: true },
+  },
+  {
+    tx_id: 'TX-00136', type: 'ISO 20022 field', type_key: 'iso', amount: '¥8,400,000',
+    sender: 'Pacific Rim Trading Co', receiver: 'Pacific Imports Inc', status: 'pending',
+    settlement_date: null,
+    precheck_summary: { action_hint: 'Mandatory creditor country field missing from pacs.008 message.', needs_technical: true, needs_compliance: false },
+  },
+  {
+    tx_id: 'TX-00131', type: 'FX limit breach', type_key: 'fx', amount: '$2,450,000',
+    sender: 'Meridian Capital', receiver: 'Andes Mining SA', status: 'pending',
+    settlement_date: null,
+    precheck_summary: null,
+  },
+  {
+    tx_id: 'TX-00121', type: 'Duplicate ref', type_key: 'duplicate', amount: '£7,200',
+    sender: 'Thames Logistics', receiver: 'Clyde Freight Ltd', status: 'resolved',
+    settlement_date: null,
+    precheck_summary: null,
+  },
 ];
 
 // Scripted agent investigation streams (fallback when backend is offline).

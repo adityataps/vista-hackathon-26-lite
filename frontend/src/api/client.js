@@ -58,7 +58,8 @@ export const getThroughput = () => getJson('/api/metrics/throughput', mock.hourl
 export const getAiStats = () => getJson('/api/metrics/ai', mock.aiStats);
 
 // ---------- Exceptions ----------
-export const getExceptions = () => getJson('/api/exceptions', mock.exceptionQueue);
+export const getExceptions = (status = 'active') =>
+  getJson(`/api/exceptions?status=${status}`, mock.exceptionQueue);
 
 /**
  * Streams an agent investigation.
@@ -102,8 +103,13 @@ export function streamInvestigation(txId, onEvent, onDone) {
       /* backend offline → scripted fallback */
     }
 
-    // --- scripted fallback ---
-    const script = mock.investigationScripts[txId] ?? mock.investigationScripts['TX-00142'];
+    // --- scripted fallback (only if a script exists for this exact TX) ---
+    const script = mock.investigationScripts[txId];
+    if (!script) {
+      onEvent({ agent: 'System', cls: 'technical', text: `Backend unavailable — cannot investigate ${txId} in offline mode.` });
+      onDone({ report_id: `RPT-${txId}`, recommendation: null });
+      return;
+    }
     for (const step of script.steps) {
       if (cancelled) return;
       await new Promise((r) => setTimeout(r, step.cls === 'tool' ? 450 : 950));
