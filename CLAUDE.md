@@ -12,12 +12,14 @@ The core value prop: replace 15–45 minutes of manual analyst work (clicking th
 
 | Layer | Choice |
 |---|---|
-| AI / LLM | Claude `claude-sonnet-4-6` via Anthropic API or AWS Bedrock |
-| Agent framework | Python + `anthropic` SDK tool use (no heavy framework) |
+| AI / LLM | Claude `claude-sonnet-4-6` via AWS Bedrock |
+| Agent framework | LangGraph (Python) — graph-based multi-agent orchestration |
+| Responsible AI | Amazon Bedrock Guardrails — topic denial, PII redaction, content filtering |
+| Knowledge Base | Amazon Bedrock KB + OpenSearch Serverless VECTORSEARCH (AOSS) — `OGQEU4WHIQ` |
 | Backend | FastAPI (Python) |
-| Data store | JSON files + SQLite (no infra overhead) |
-| Frontend | React or plain HTML/JS |
-| Infra | Terraform (AWS) — localhost is acceptable for live demo |
+| Data store | SQLite seeded from S3 on startup; RDS PostgreSQL for payment events |
+| Frontend | React + Recharts |
+| Infra | Terraform (AWS) |
 
 ## Agent Architecture
 
@@ -53,10 +55,37 @@ Exception Event
 ## Repo Structure
 
 ```
-backend/    # FastAPI app + agent logic
-frontend/   # React or HTML/JS investigation UI
-infra/      # Terraform (AWS)
-docs/       # Implementation plan, idea bank, FAQ
+backend/
+  main.py                              FastAPI routes incl. POST /api/seed, POST /api/investigate
+  agents/
+    guardrail.py                       Bedrock converse() wrapper with guardrailConfig injection
+    graph.py                           LangGraph orchestration graph (intake → investigation → parallel specialists → resolution)
+    nodes/                             Individual agent node implementations
+    tools/
+      knowledge_base_tool.py           search_knowledge_base(query) — Bedrock KB retrieve()
+      <other tools>                    get_payment_record, get_swift_message, check_sanctions, etc.
+
+frontend/                              React + Recharts — 3-tab dashboard, agent stream, HITL gate, chatbot
+
+infra/                                 Terraform (us-west-2)
+  main.tf                              AWS + OpenSearch + Cloudflare providers
+  bedrock.tf                           Bedrock Guardrail (topic denial, PII, content filters)
+  bedrock_kb.tf                        Bedrock Knowledge Base + AOSS collection + opensearch_index
+  s3.tf                                mockdata bucket + knowledge_base bucket
+  assets/                              KB reference docs (uploaded to KB S3 bucket)
+    error-code-catalog.md
+    iban-format-registry.md
+    sanctions-screening-procedure.md
+    duplicate-payment-resolution.md
+    swift-pacs008-field-guide.md
+    payment-sla-and-escalation.md
+  ecs.tf / rds.tf / alb.tf / iam.tf / ...
+
+jobs/
+  pacs008-generator/                   pacs.008 CBPR+ SR2025 XML generator with error injection
+  payment-ingest/                      SQS-triggered Lambda — XML → PostgreSQL
+
+docs/                                  Implementation plan, idea bank, FAQ
 ```
 
 ## Demo Scenarios (must work for submission)
@@ -102,8 +131,16 @@ npm run build     # production build
 cd infra
 terraform init
 terraform plan
-terraform apply   # confirm with user before running
+
+# Standard apply (no KB changes):
+terraform apply
+
+# When changes touch bedrock_kb.tf or opensearch_index — the opensearch provider
+# doesn't inherit the AWS SSO session, so export credentials first:
+eval "$(aws configure export-credentials --profile AdministratorAccess-446643829639 --format env)" && terraform apply -auto-approve
 ```
+
+`terraform.tfvars` must include `aws_profile = "AdministratorAccess-446643829639"`.
 
 ## Key Constraints
 
@@ -114,13 +151,25 @@ terraform apply   # confirm with user before running
 
 ## Agent Tool Calls (function calling pattern)
 
-Agents call mock tools to retrieve data — not external APIs. Tools to implement:
+Agents call mock tools to retrieve data — not external APIs. Implemented tools:
 - `get_payment_record(tx_id)` → transaction details
 - `get_swift_message(tx_id)` → raw SWIFT/pacs.008 message
 - `get_error_description(error_code)` → error catalog entry
 - `check_sanctions(entity_name)` → sanctions list match + score
 - `get_bic_info(bic)` → bank/counterparty details
 - `get_resolution_history(error_code)` → similar past cases
+- `get_payment_events(tx_id)` → full payment lifecycle event log (PAYMENT_RECEIVED → SETTLEMENT_CONFIRMED)
+- `search_knowledge_base(query)` → semantic search over KB docs via Bedrock KB `retrieve()`, returns top-5 results with content + score + S3 source URI
+
+## Key Live Resource IDs (us-west-2)
+
+| Resource | ID |
+|---|---|
+| Bedrock Knowledge Base | `OGQEU4WHIQ` |
+| KB S3 bucket | `payinvestigator-kb-446643829639` |
+| Bedrock Guardrail | `elu2okf0di0w` |
+| Guardrail ARN | `arn:aws:bedrock:us-west-2:446643829639:guardrail/elu2okf0di0w` |
+| AOSS Collection | `0y4c0p3nto6tzm5zrmof` |
 
 ## Judging Criteria
 

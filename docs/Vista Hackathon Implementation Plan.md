@@ -138,12 +138,14 @@ Example interactions:
 | AI / LLM | Claude claude-sonnet-4-6 via **AWS Bedrock** (`ChatBedrock`) | AWS-native LLM; best tool use + reasoning |
 | Agent framework | **LangGraph** (Python) | Graph-based multi-agent orchestration, built-in state + checkpointing, parallel node execution |
 | Tool connectivity | LangGraph tool nodes + LangChain tools | Native integration; `@tool` decorator, bind to `ChatBedrock` |
+| Responsible AI | **Amazon Bedrock Guardrails** | Topic denial (non-payment queries), PII anonymization, content filtering — automated safety layer on all LLM calls |
+| Knowledge Base | **Amazon Bedrock KB + AOSS** (VECTORSEARCH) | Semantic retrieval over 6 payment ops reference docs; KB ID `OGQEU4WHIQ` |
 | Backend | FastAPI (Python) | Fast to stand up, clean REST endpoints for frontend |
-| Data store | SQLite (seeded from S3 on startup) | Simple for mock data; S3 as source of truth; no EFS complexity |
-| Frontend | React + Recharts | Dashboard + investigation UI |
+| Data store | SQLite (seeded from S3 on startup); RDS PostgreSQL for payment events | Simple for mock data; S3 as source of truth |
+| Frontend | React + Recharts | Dashboard + investigation UI — 3 views, agent stream, HITL gate, chatbot |
 | Containerisation | Docker | Single image for backend; deployed via Fargate |
 | CI/CD | GitHub Actions → ECR → ECS Fargate | Push-to-deploy; Docker build + push + task definition update |
-| Cloud | AWS (ECS Fargate, ECR, ALB, S3, Bedrock, ACM) | Full AWS stack; no Route 53 needed |
+| Cloud | AWS (ECS Fargate, ECR, ALB, RDS, SQS, Lambda, S3, Bedrock, AOSS, ACM) | Full AWS stack |
 | DNS / Hosting | `vistahack26.tapshalkar.com` (Cloudflare) → ALB | ACM cert on ALB; Cloudflare DNS-only CNAME |
 | Repo | GitHub | Judges review commit history; source of CI/CD triggers |
 
@@ -243,17 +245,22 @@ EXPOSE 80
 
 ### Key AWS + Infra Checklist
 
-- [ ] ECR repositories created (`payinvestigator-backend`, `payinvestigator-frontend`)
-- [ ] ECS cluster + Fargate services defined (backend + frontend)
-- [ ] ALB + target groups + HTTPS listener + path-based routing
-- [ ] ACM certificate issued and validated via Cloudflare
-- [ ] S3 bucket created; mock data JSON files uploaded
-- [ ] IAM task execution role (ECR pull + CloudWatch Logs)
-- [ ] IAM backend task role (Bedrock invoke + S3 read)
-- [ ] IAM OIDC role (GitHub Actions): ECR push + ECS deploy
+- [x] ECR repositories created (`payinvestigator-backend`, `payinvestigator-frontend`, `payinvestigator-ingest`)
+- [x] ECS cluster + Fargate services defined (backend + frontend)
+- [x] ALB + target groups + HTTPS listener + path-based routing
+- [x] ACM certificate issued and validated via Cloudflare
+- [x] S3 mock data bucket created (`payinvestigator-mockdata-<account_id>`)
+- [x] S3 knowledge base bucket created (`payinvestigator-kb-<account_id>`)
+- [x] IAM task execution role (ECR pull + CloudWatch Logs)
+- [x] IAM backend task role (Bedrock invoke + S3 read + Bedrock KB retrieve + guardrail apply)
+- [x] IAM OIDC role (GitHub Actions): ECR push + ECS deploy
 - [x] Bedrock model access confirmed (`claude-sonnet-4-6`, `us-west-2`)
-- [ ] `AWS_ACCOUNT_ID` added to GitHub Secrets
-- [ ] `GET /health` endpoint added to FastAPI (ALB health check)
+- [x] Bedrock Guardrail provisioned (`elu2okf0di0w`) — topic denial, PII, content filters
+- [x] Bedrock Knowledge Base provisioned (`OGQEU4WHIQ`) — AOSS VECTORSEARCH, 6 reference docs ingested
+- [x] RDS PostgreSQL provisioned (payment events, publicly accessible for team debugging)
+- [x] SQS queue + Lambda ingest pipeline live
+- [x] `AWS_ACCOUNT_ID` added to GitHub Secrets
+- [x] `GET /health` endpoint added to FastAPI (ALB health check)
 
 ---
 
@@ -272,6 +279,19 @@ EXPOSE 80
 ## Mock Data Plan
 
 > Pre-generate before writing any agent code. ~30 records per dataset.
+
+### Knowledge Base Reference Docs (`infra/assets/` — ingested into Bedrock KB `OGQEU4WHIQ`)
+
+Six markdown documents uploaded to `payinvestigator-kb-<account_id>` and indexed in the Bedrock Knowledge Base. Agents query these via `search_knowledge_base()`:
+
+| File | Contents |
+|---|---|
+| `error-code-catalog.md` | 10 ISO 20022 error codes with detection logic, XPath fields, remediation actions |
+| `iban-format-registry.md` | 41-country IBAN length/format table, Mod-97 algorithm |
+| `sanctions-screening-procedure.md` | OFAC/EU/UK/UN watchlists, hold procedure, false-positive handling; demo entities pre-loaded |
+| `duplicate-payment-resolution.md` | camt.056 recall procedure, detection signals, resolution outcomes |
+| `swift-pacs008-field-guide.md` | CBPR+ SR2025 pacs.008 AppHdr + CdtTrfTxInf field reference |
+| `payment-sla-and-escalation.md` | SLA windows per stage, stuck payment definition, escalation matrix, monitoring SQL |
 
 ### Track 1 datasets (Exception Resolution)
 - **Payment transactions** — `tx_id`, `sender_bic`, `receiver_bic`, `sender_iban`, `receiver_iban`, `amount`, `currency`, `status`, `error_code`, `timestamp`
@@ -421,6 +441,7 @@ In-flight payment health, live alerts, and correspondent degradation heatmap.
 - **Explainability:** Every recommendation includes a plain-English rationale and the tools/data sources consulted.
 - **Audit trail:** Full log of agent reasoning steps, tool calls, and data accessed — satisfies regulatory requirements.
 - **Bias / false positives:** Compliance agent is designed to flag uncertainty and escalate rather than auto-reject. Reduces, not replaces, human judgment.
+- **Bedrock Guardrails (automated layer):** All LLM calls pass through `aws_bedrock_guardrail.pay_investigator` — topic denial blocks non-payment queries, PII anonymization redacts IBANs/SWIFT codes/card numbers/emails, content filters block harmful content at HIGH sensitivity. Guardrail ID `elu2okf0di0w`.
 - **Data privacy:** No real PII in demo. In production, would operate within bank's existing data governance perimeter.
 
 ---
@@ -443,10 +464,12 @@ In-flight payment health, live alerts, and correspondent degradation heatmap.
 |---|---|
 | `get_payment_record(tx_id)` | Full transaction details |
 | `get_swift_message(tx_id)` | Raw SWIFT message associated with the payment |
+| `get_payment_events(tx_id)` | Full payment lifecycle event log (PAYMENT_RECEIVED → SETTLEMENT_CONFIRMED) |
 | `lookup_bic(bic)` | Bank name, country, correspondent relationships |
 | `validate_iban(iban)` | Checksum validation + format check |
 | `get_error_details(error_code)` | Detailed error description and standard remediation steps |
 | `get_account_status(account_id)` | Account standing, restrictions, recent activity |
+| `search_knowledge_base(query)` | Semantic search over Bedrock KB (error codes, IBAN registry, sanctions procedure, pacs.008 field guide, SLA policy, duplicate resolution) |
 
 #### Compliance Agent
 | Tool | Description |

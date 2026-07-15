@@ -105,11 +105,13 @@ Four pre-scripted scenarios the live demo must nail:
 |---|---|
 | AI / LLM | Claude `claude-sonnet-4-6` via AWS Bedrock |
 | Agent framework | LangGraph (Python) — graph-based multi-agent orchestration, parallel node execution, built-in checkpointing |
+| Responsible AI | Amazon Bedrock Guardrails — topic denial, PII anonymization, content filtering |
+| Knowledge Base | Amazon Bedrock KB + OpenSearch Serverless (AOSS VECTORSEARCH) — semantic retrieval over payment ops docs |
 | Backend | FastAPI (Python) |
-| Data store | SQLite seeded from S3 on startup |
+| Data store | SQLite seeded from S3 on startup; RDS PostgreSQL for payment events |
 | Frontend | React + Recharts |
 | CI/CD | GitHub Actions → ECR → ECS Fargate (path-gated parallel jobs) |
-| Cloud | AWS (ECS Fargate, ECR, ALB, RDS PostgreSQL, SQS, Lambda, S3, Bedrock, ACM) |
+| Cloud | AWS (ECS Fargate, ECR, ALB, RDS PostgreSQL, SQS, Lambda, S3, Bedrock, AOSS, ACM) |
 | DNS / TLS | `vistahack26.tapshalkar.com` (Cloudflare CNAME → ALB, ACM cert) |
 | IaC | Terraform (`infra/`) |
 
@@ -156,8 +158,12 @@ Cloudflare DNS  →  ALB (HTTPS, ACM cert)
 | ECR — Ingest Lambda | `payinvestigator-ingest` |
 | Lambda | `payinvestigator-payment-xml-ingest` |
 | SQS Queue | `payinvestigator-payment-ingest` |
-| RDS | PostgreSQL 16, `db.t4g.micro` |
-| S3 Bucket | `payinvestigator-mockdata-<account_id>` |
+| RDS | PostgreSQL 16, `db.t4g.micro` (publicly accessible for team debugging) |
+| S3 — Mock Data | `payinvestigator-mockdata-<account_id>` |
+| S3 — Knowledge Base | `payinvestigator-kb-<account_id>` |
+| Bedrock Knowledge Base | `OGQEU4WHIQ` |
+| AOSS Collection | `payinvestigator-kb` (VECTORSEARCH) |
+| Bedrock Guardrail | `elu2okf0di0w` |
 | ALB | HTTPS listener, path-based routing |
 | Region | `us-west-2` |
 
@@ -191,13 +197,19 @@ The generator produces realistic CBPR+ pacs.008 SR2025 messages with configurabl
 
 ```
 backend/                    FastAPI app + agent logic
-  main.py                   API routes incl. POST /api/seed
+  main.py                   API routes incl. POST /api/seed, POST /api/investigate
   seed_db.py                seeds SQLite from S3 on startup
-  Dockerfile                build context: repo root (copies pacs008_generator/)
+  agents/
+    guardrail.py            Bedrock converse() wrapper with guardrailConfig injection
+    graph.py                LangGraph orchestration graph
+    nodes/                  Individual agent node implementations
+    tools/
+      knowledge_base_tool.py  search_knowledge_base() — Bedrock KB retrieve()
+  Dockerfile                build context: repo root
   requirements.txt
 
 frontend/                   React + Vite + Recharts
-  src/App.jsx               three-tab dashboard shell
+  src/App.jsx               three-tab dashboard (Ops Dashboard, Exception Queue, Bottleneck Monitor)
   Dockerfile                multi-stage: node build → nginx serve
 
 jobs/
@@ -210,19 +222,22 @@ jobs/
     Dockerfile              amazon/aws-lambda-python:3.12 base
 
 infra/                      Terraform (us-west-2)
-  main.tf                   providers, VPC data sources
+  main.tf                   AWS + opensearch-project/opensearch + Cloudflare providers
+  bedrock.tf                Bedrock Guardrail (topic denial, PII anonymization, content filters)
+  bedrock_kb.tf             Bedrock KB + AOSS collection + opensearch_index pre-creation
   ecr.tf                    three ECR repos + 5-tag lifecycle policies
   ecs.tf                    ECS cluster, task definitions, Fargate services
   alb.tf                    ALB, target groups, HTTPS listener, path routing
   acm.tf                    ACM certificate (DNS validation)
   dns.tf                    Cloudflare DNS records (Terraform provider)
-  rds.tf                    RDS PostgreSQL 16, db.t4g.micro
+  rds.tf                    RDS PostgreSQL 16, db.t4g.micro (public SG rule for team debug)
   sqs.tf                    SQS queue + S3 bucket notification
   lambda.tf                 Lambda function + VPC + event source mapping
-  s3.tf                     S3 mock data bucket
+  s3.tf                     mockdata bucket + knowledge_base bucket
   iam.tf                    task execution role, backend task role, GitHub OIDC role
   security_groups.tf        ALB, backend, frontend, Lambda, RDS SGs
   cloudwatch.tf             log groups
+  assets/                   KB reference docs (6 markdown files, uploaded to KB S3 bucket)
   outputs.tf
 
 .github/workflows/
@@ -273,10 +288,16 @@ python -m pacs008_generator.generator   # writes to output/
 
 ```bash
 cd infra
-cp terraform.tfvars.example terraform.tfvars   # fill in values
+cp terraform.tfvars.example terraform.tfvars   # fill in values; set aws_profile
 terraform init
 terraform plan
-terraform apply    # confirm before running
+
+# Standard apply:
+terraform apply
+
+# When bedrock_kb.tf / opensearch_index changes are involved, the opensearch provider
+# doesn't inherit the AWS SSO session — export creds first:
+eval "$(aws configure export-credentials --profile AdministratorAccess-446643829639 --format env)" && terraform apply -auto-approve
 ```
 
 Required GitHub secret: `AWS_ACCOUNT_ID`
@@ -291,4 +312,5 @@ Human-in-the-loop is non-negotiable — a judging criterion and a core design re
 - **Explainability.** Every recommendation includes plain-English rationale and lists the tools and data sources consulted.
 - **Audit trail.** Full log of agent reasoning steps, tool calls, and data accessed — satisfies regulatory requirements.
 - **Uncertainty escalation.** The Compliance Agent is designed to flag uncertainty and escalate rather than auto-reject. It reduces human judgment workload, does not replace it.
+- **Bedrock Guardrails.** An automated safety layer applied to all LLM calls: topic denial for non-payment queries, PII anonymization (IBAN, SWIFT codes, card numbers, email), and content filtering at high sensitivity. Runs before any agent response reaches the user.
 - **No real PII.** All demo data is synthetic. In production, the system operates within the bank's existing data governance perimeter.
