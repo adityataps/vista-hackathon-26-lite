@@ -14,6 +14,8 @@ _SEPA_SCT_CONSTANT = 120
 _FEDWIRE_CONSTANT = 45
 _MANUAL_COST_BASELINE = 27.50   # USD per case — industry midpoint $15–$40
 _LLM_COST_PER_CASE = 0.29       # USD — average across exception types
+_INPUT_PRICE_PER_1K = 0.003     # USD per 1k input tokens, claude-sonnet-4-6 us-west-2
+_OUTPUT_PRICE_PER_1K = 0.015    # USD per 1k output tokens
 
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
@@ -316,18 +318,68 @@ def get_throughput():
             for h in hours]
 
 
-# ── Token costs — static (not tracked per-investigation yet) ──────────────────
+# ── Token costs ──────────────────────────────────────────────────────────────
+
+_STATIC_TOKEN_COSTS = [
+    {"type": "Bad IBAN (checksum)",     "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.09,
+     "precheck_avg_tokens": 1200,       "investigation_avg_tokens": 5800},
+    {"type": "Invalid BIC",             "precheck_avg_usd": 0.003, "investigation_avg_usd": 0.07,
+     "precheck_avg_tokens": 1000,       "investigation_avg_tokens": 4500},
+    {"type": "Duplicate UETR",          "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.11,
+     "precheck_avg_tokens": 1300,       "investigation_avg_tokens": 7000},
+    {"type": "Sanctions name hit",      "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.88,
+     "precheck_avg_tokens": 1400,       "investigation_avg_tokens": 55000},
+    {"type": "Missing mandatory field", "precheck_avg_usd": 0.003, "investigation_avg_usd": 0.14,
+     "precheck_avg_tokens": 1100,       "investigation_avg_tokens": 8500},
+    {"type": "FX limit breach",         "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.31,
+     "precheck_avg_tokens": 1200,       "investigation_avg_tokens": 19000},
+]
+
 
 @router.get("/api/metrics/token-costs")
 def get_token_costs():
-    return [
-        {"type": "Bad IBAN (checksum)",      "avg_token_cost_usd": 0.09},
-        {"type": "Invalid BIC",              "avg_token_cost_usd": 0.07},
-        {"type": "Duplicate UETR",           "avg_token_cost_usd": 0.11},
-        {"type": "Sanctions name hit",       "avg_token_cost_usd": 0.88},
-        {"type": "Missing mandatory field",  "avg_token_cost_usd": 0.14},
-        {"type": "FX limit breach",          "avg_token_cost_usd": 0.31},
-    ]
+    conn = get_db()
+    if not conn:
+        return _STATIC_TOKEN_COSTS
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                (e.detected_errors->0->>'code')         AS first_code,
+                AVG(e.precheck_input_tokens)             AS pre_in,
+                AVG(e.precheck_output_tokens)            AS pre_out,
+                AVG(i.input_tokens)                      AS inv_in,
+                AVG(i.output_tokens)                     AS inv_out
+            FROM exceptions e
+            LEFT JOIN LATERAL (
+                SELECT input_tokens, output_tokens
+                FROM investigations
+                WHERE exception_id = e.id AND input_tokens > 0
+                ORDER BY created_at DESC LIMIT 1
+            ) i ON true
+            WHERE e.precheck_input_tokens > 0
+            GROUP BY first_code
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        return _STATIC_TOKEN_COSTS
+
+    result = []
+    for first_code, pre_in, pre_out, inv_in, inv_out in rows:
+        display = _CODE_TO_DISPLAY.get(first_code or "", (first_code or "Unknown").replace("_", " ").title())
+        pre_in = float(pre_in or 0)
+        pre_out = float(pre_out or 0)
+        inv_in = float(inv_in or 0)
+        inv_out = float(inv_out or 0)
+        result.append({
+            "type": display,
+            "precheck_avg_usd": round((pre_in * _INPUT_PRICE_PER_1K + pre_out * _OUTPUT_PRICE_PER_1K) / 1000, 4),
+            "investigation_avg_usd": round((inv_in * _INPUT_PRICE_PER_1K + inv_out * _OUTPUT_PRICE_PER_1K) / 1000, 4),
+            "precheck_avg_tokens": round(pre_in + pre_out),
+            "investigation_avg_tokens": round(inv_in + inv_out),
+        })
+    return result
 
 
 # ── Demo payment generator ────────────────────────────────────────────────────
