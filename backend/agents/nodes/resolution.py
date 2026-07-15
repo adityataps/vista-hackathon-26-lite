@@ -55,6 +55,29 @@ def _kb_context(error_codes: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _kb_fallback_recommendation(error_codes: list[str]) -> dict:
+    """Rules-based fallback when the LLM call fails — mirrors ErrorResolutionAgent.fallbackSuggestion()."""
+    entries = [_KB[c] for c in error_codes if c in _KB]
+    if entries:
+        primary = entries[0]
+        action = primary["suggested_action"]
+        rationale = (
+            f"LLM unavailable; recommendation derived from static knowledge base. "
+            f"Error {primary['code']} (severity={primary['severity']}, "
+            f"type={primary['investigation_type']}) requires manual review."
+        )
+    else:
+        action = "Route to a human analyst for manual investigation."
+        rationale = "LLM unavailable and no knowledge-base entry found for the detected error codes."
+    return {
+        "action": action,
+        "rationale": rationale,
+        "confidence": 0.5,
+        "requires_human_approval": True,
+        "source": "rules_fallback",
+    }
+
+
 async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
     technical = state.get("technical_findings") or {}
     compliance = state.get("compliance_findings") or {}
@@ -77,18 +100,22 @@ async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
         "keys: action, rationale, confidence, requires_human_approval."
     )
 
-    response = await llm.ainvoke([SystemMessage(content=SYSTEM), HumanMessage(content=prompt)])
-    raw = response.content.strip()
-
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
     try:
-        recommendation = json.loads(raw)
-    except Exception:
-        recommendation = {"action": raw, "rationale": "See full agent output.", "confidence": 0.8,
-                          "requires_human_approval": True}
+        response = await llm.ainvoke([SystemMessage(content=SYSTEM), HumanMessage(content=prompt)])
+        raw = response.content.strip()
+
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        try:
+            recommendation = json.loads(raw)
+        except Exception:
+            recommendation = {"action": raw, "rationale": "See full agent output.", "confidence": 0.8,
+                              "requires_human_approval": True}
+    except Exception as exc:
+        logger.warning("LLM call failed in resolution_node, falling back to KB rules: %s", exc)
+        recommendation = _kb_fallback_recommendation(error_codes)
 
     recommendation.setdefault("requires_human_approval", True)
 

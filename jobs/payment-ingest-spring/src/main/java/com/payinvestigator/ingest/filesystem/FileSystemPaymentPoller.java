@@ -3,6 +3,7 @@ package com.payinvestigator.ingest.filesystem;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.payinvestigator.ingest.config.FileSystemIngestProperties;
 import com.payinvestigator.ingest.db.PaymentRepository;
+import com.payinvestigator.ingest.resolution.ErrorResolutionAgent;
 import com.payinvestigator.ingest.rules.ErrorHit;
 import com.payinvestigator.ingest.rules.PaymentErrorDetector;
 import com.payinvestigator.ingest.xml.Pacs008Parser;
@@ -50,17 +51,20 @@ public class FileSystemPaymentPoller {
     private final FileSystemIngestProperties props;
     private final PaymentRepository paymentRepository;
     private final LocalReferenceDataLoader referenceDataLoader;
+    private final ErrorResolutionAgent errorResolutionAgent;
     private final ObjectMapper objectMapper;
     private final String backendUrl;
 
     private volatile LocalReferenceDataLoader.ReferenceData referenceData;
 
     public FileSystemPaymentPoller(FileSystemIngestProperties props, PaymentRepository paymentRepository,
-                                    LocalReferenceDataLoader referenceDataLoader, ObjectMapper objectMapper,
+                                    LocalReferenceDataLoader referenceDataLoader,
+                                    ErrorResolutionAgent errorResolutionAgent, ObjectMapper objectMapper,
                                     @Value("${payment-ingest.backend-url:http://localhost:8000}") String backendUrl) {
         this.props = props;
         this.paymentRepository = paymentRepository;
         this.referenceDataLoader = referenceDataLoader;
+        this.errorResolutionAgent = errorResolutionAgent;
         this.objectMapper = objectMapper;
         this.backendUrl = backendUrl;
     }
@@ -134,6 +138,7 @@ public class FileSystemPaymentPoller {
         log.info("ingested {} (msg_id={}, payment_id={}, has_error={})", key, parsed.msgId, paymentId, hasError);
 
         if (hasError) {
+            errorResolutionAgent.investigate(key, paymentId, parsed, hits);
             notifyBackendExceptions(parsed.msgId, parsed.uetr, hits);
         }
     }
