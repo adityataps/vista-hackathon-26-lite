@@ -86,3 +86,9 @@ resource "aws_ssm_parameter" "db_url" {
   type  = "SecureString"
   value = "postgresql://${local.db_user}:${random_password.db.result}@${aws_db_instance.main.endpoint}/${local.db_name}"
 }
+
+resource "aws_ssm_parameter" "langsmith_api_key" {
+  name  = "/${var.app_name}/langsmith_api_key"
+  type  = "SecureString"
+  value = var.langsmith_api_key != "" ? var.langsmith_api_key : "unset"
+}

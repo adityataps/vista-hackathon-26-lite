@@ -25,9 +25,12 @@ resource "aws_ecs_task_definition" "backend" {
       { name = "GUARDRAIL_VERSION",   value = aws_bedrock_guardrail_version.pay_investigator.version },
       { name = "KNOWLEDGE_BASE_ID",   value = aws_bedrockagent_knowledge_base.main.id },
       { name = "BEDROCK_MODEL_ID",    value = "us.anthropic.claude-sonnet-4-6" },
+      { name = "LANGCHAIN_TRACING_V2", value = "true" },
+      { name = "LANGCHAIN_PROJECT",    value = var.langsmith_project },
     ]
     secrets = [
-      { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.db_url.arn },
+      { name = "DATABASE_URL",       valueFrom = aws_ssm_parameter.db_url.arn },
+      { name = "LANGCHAIN_API_KEY", valueFrom = aws_ssm_parameter.langsmith_api_key.arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"

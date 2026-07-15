@@ -43,10 +43,10 @@ data "aws_iam_policy_document" "task_execution" {
     resources = ["arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/payinvestigator-*:*"]
   }
 
-  # Allow ECS to fetch the DB connection string from SSM at container start
+  # Allow ECS to fetch the DB connection string and LangSmith API key from SSM at container start
   statement {
     actions   = ["ssm:GetParameters"]
-    resources = [aws_ssm_parameter.db_url.arn]
+    resources = [aws_ssm_parameter.db_url.arn, aws_ssm_parameter.langsmith_api_key.arn]
   }
 
   # Decrypt the SSM SecureString (uses the AWS-managed key for SSM)

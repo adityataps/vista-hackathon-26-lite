@@ -12,3 +12,4 @@ langchain-core
 langchain-aws
 defusedxml>=0.7
 reportlab>=4.0
+langsmith>=0.1

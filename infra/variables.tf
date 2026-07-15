@@ -33,3 +33,16 @@ variable "error_notify_endpoint_url" {
   type        = string
   default     = ""
 }
+
+variable "langsmith_api_key" {
+  description = "LangSmith API key used for LangGraph/LangChain tracing. Leave blank to disable tracing."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "langsmith_project" {
+  description = "LangSmith project name traces are grouped under."
+  type        = string
+  default     = "payinvestigator"
+}
