@@ -176,7 +176,8 @@ export const getHeatmap = () => getJson('/api/monitoring/heatmap', mock.heatmap)
 /** Lightweight connectivity probe for the header badge. */
 export async function probeBackend() {
   try {
-    await apiFetch('/api/health', { timeout: 1500 });
+    // probe a real data endpoint — the backend serves no /api/health route
+    await apiFetch('/api/metrics/kpis', { timeout: 2500 });
     return true;
   } catch {
     return false;

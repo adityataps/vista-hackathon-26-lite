@@ -75,10 +75,10 @@ export default function OperationsDashboard() {
               <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(79,142,247,0.06)' }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               {/* sepa_sct + fedwire = static mock rails (constant); swift_cbpr = dynamic from message generator */}
-              <Bar dataKey="sepa_sct" name="SEPA SCT (mock)" stackId="a" fill="#3d5578" />
-              <Bar dataKey="fedwire" name="Fedwire (mock)" stackId="a" fill="#3f6e6a" />
-              <Bar dataKey="swift_cbpr" name="SWIFT CBPR+" stackId="a" fill="#4f8ef7" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="exceptions" name="Exceptions" fill="#f87171" radius={[3, 3, 0, 0]} />
+              <Bar isAnimationActive={false} dataKey="sepa_sct" name="SEPA SCT (mock)" stackId="a" fill="#3d5578" />
+              <Bar isAnimationActive={false} dataKey="fedwire" name="Fedwire (mock)" stackId="a" fill="#3f6e6a" />
+              <Bar isAnimationActive={false} dataKey="swift_cbpr" name="SWIFT CBPR+" stackId="a" fill="#4f8ef7" radius={[3, 3, 0, 0]} />
+              <Bar isAnimationActive={false} dataKey="exceptions" name="Exceptions" fill="#f87171" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -98,10 +98,10 @@ export default function OperationsDashboard() {
               <Tooltip contentStyle={tooltipStyle} formatter={(v) => `$${Number(v).toFixed(2)}`} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               {/* baseline = constant manual cost; swift_cbpr = dynamic (baseline − token cost); others mocked */}
-              <Line type="monotone" dataKey="baseline" name="Manual investigation baseline" stroke="#8fa1c0" strokeDasharray="6 4" strokeWidth={1.5} dot={false} />
-              <Line type="monotone" dataKey="swift_cbpr" name="SWIFT CBPR+" stroke="#4f8ef7" strokeWidth={2.5} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="sepa_sct" name="SEPA SCT (mock)" stroke="#34d399" strokeWidth={1.5} strokeDasharray="2 3" dot={false} />
-              <Line type="monotone" dataKey="fedwire" name="Fedwire (mock)" stroke="#2dd4bf" strokeWidth={1.5} strokeDasharray="2 3" dot={false} />
+              <Line isAnimationActive={false} type="monotone" dataKey="baseline" name="Manual investigation baseline" stroke="#8fa1c0" strokeDasharray="6 4" strokeWidth={1.5} dot={false} />
+              <Line isAnimationActive={false} type="monotone" dataKey="swift_cbpr" name="SWIFT CBPR+" stroke="#4f8ef7" strokeWidth={2.5} dot={{ r: 3 }} />
+              <Line isAnimationActive={false} type="monotone" dataKey="sepa_sct" name="SEPA SCT (mock)" stroke="#34d399" strokeWidth={1.5} strokeDasharray="2 3" dot={false} />
+              <Line isAnimationActive={false} type="monotone" dataKey="fedwire" name="Fedwire (mock)" stroke="#2dd4bf" strokeWidth={1.5} strokeDasharray="2 3" dot={false} />
             </LineChart>
           </ResponsiveContainer>
           <div className="footnote">
@@ -121,8 +121,8 @@ export default function OperationsDashboard() {
               <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(79,142,247,0.06)' }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               {/* green = agent fix approved by operator; orange = operator rejected (HITL) */}
-              <Bar dataKey="approved" name="Approved (human)" stackId="x" fill="#34d399" />
-              <Bar dataKey="rejected" name="Rejected (human)" stackId="x" fill="#fbbf24" radius={[0, 3, 3, 0]} />
+              <Bar isAnimationActive={false} dataKey="approved" name="Approved (human)" stackId="x" fill="#34d399" />
+              <Bar isAnimationActive={false} dataKey="rejected" name="Rejected (human)" stackId="x" fill="#fbbf24" radius={[0, 3, 3, 0]} />
             </BarChart>
           </ResponsiveContainer>
           {ai && (
@@ -144,8 +144,8 @@ export default function OperationsDashboard() {
                 formatter={(value, name) => [`$${value.toFixed(4)}`, name]}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="precheck_avg_usd"      name="Pre-check"         fill="#3d5578" radius={[0,3,3,0]} />
-              <Bar dataKey="investigation_avg_usd" name="Full investigation" fill="#4f8ef7" radius={[0,3,3,0]} />
+              <Bar isAnimationActive={false} dataKey="precheck_avg_usd"      name="Pre-check"         fill="#3d5578" radius={[0,3,3,0]} />
+              <Bar isAnimationActive={false} dataKey="investigation_avg_usd" name="Full investigation" fill="#4f8ef7" radius={[0,3,3,0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
