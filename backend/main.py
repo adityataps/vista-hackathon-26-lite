@@ -4,6 +4,9 @@ import logging
 import os
 import re
 import defusedxml.ElementTree as ET
+from dotenv import load_dotenv
+
+load_dotenv()
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -248,35 +251,46 @@ async def _run_precheck(tx_id: str) -> None:
     }
 
     from agents.nodes.intake import intake_node
-    result = await intake_node(initial_state, get_llm())
 
-    usage = result.get("usage_metadata", {})
-    intake_cls = result.get("intake_classification", {})
-    steps = result.get("steps", [])
-    precheck_summary = {
-        "needs_technical": intake_cls.get("needs_technical", False),
-        "needs_compliance": intake_cls.get("needs_compliance", False),
-        "action_hint": steps[0]["text"] if steps else "",
-        "error_categories": intake_cls.get("error_categories", []),
-    }
+    try:
+        result = await intake_node(initial_state, get_llm())
 
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE exceptions
-            SET status='pending',
-                precheck_summary=%s,
-                precheck_input_tokens=%s,
-                precheck_output_tokens=%s,
-                updated_at=NOW()
-            WHERE id=%s
-        """, (
-            json.dumps(precheck_summary),
-            usage.get("input_tokens", 0),
-            usage.get("output_tokens", 0),
-            exc_id,
-        ))
-    conn.commit()
-    logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
+        usage = result.get("usage_metadata", {})
+        intake_cls = result.get("intake_classification", {})
+        steps = result.get("steps", [])
+        precheck_summary = {
+            "needs_technical": intake_cls.get("needs_technical", False),
+            "needs_compliance": intake_cls.get("needs_compliance", False),
+            "action_hint": steps[0].get("text", "") if steps else "",
+            "error_categories": intake_cls.get("error_categories", []),
+        }
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE exceptions
+                SET status='pending',
+                    precheck_summary=%s,
+                    precheck_input_tokens=%s,
+                    precheck_output_tokens=%s,
+                    updated_at=NOW()
+                WHERE id=%s
+            """, (
+                json.dumps(precheck_summary),
+                usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0),
+                exc_id,
+            ))
+        conn.commit()
+        logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
+
+    except Exception:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE exceptions SET status='pending', updated_at=NOW() WHERE id=%s",
+                (exc_id,)
+            )
+        conn.commit()
+        raise  # re-raises into _precheck_worker's outer try/except for logging
 
 
 async def _precheck_worker() -> None:
