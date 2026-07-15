@@ -52,7 +52,7 @@ def list_exceptions(status: Optional[str] = Query(None)):
     with conn.cursor() as cur:
         cur.execute(f"""
             SELECT e.id, e.msg_id, e.uetr, e.detected_errors, e.status, e.created_at,
-                   e.precheck_summary,
+                   e.precheck_summary, e.recommendation, e.recommended_sql,
                    p.id AS payment_db_id, p.amount, p.currency,
                    p.debtor_name, p.creditor_name, p.sender_bic, p.receiver_bic,
                    p.settlement_date,
@@ -76,7 +76,7 @@ def list_exceptions(status: Optional[str] = Query(None)):
     result = []
     for row in rows:
         (exc_id, msg_id, uetr, detected_errors, status_val, created_at,
-         precheck_summary, payment_db_id, amount, currency,
+         precheck_summary, recommendation, recommended_sql, payment_db_id, amount, currency,
          debtor_name, creditor_name, sender_bic, receiver_bic,
          settlement_date, resolved_at, recommendation_action) = row
 
@@ -100,6 +100,8 @@ def list_exceptions(status: Optional[str] = Query(None)):
             "precheck_summary": precheck_summary,
             "resolved_at": resolved_at.isoformat() if resolved_at else None,
             "recommendation_action": recommendation_action,
+            "recommendation": recommendation,
+            "recommended_sql": recommended_sql,
         })
     return result
 
@@ -291,6 +293,8 @@ async def investigate(tx_id: str):
                 final_state = event.get("data", {}).get("output", {})
 
         recommendation = final_state.get("recommendation") or {}
+        recommended_sql = recommendation.get("sql", None)
+
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE investigations
@@ -309,7 +313,18 @@ async def investigate(tx_id: str):
                 total_output_tokens,
                 inv_id,
             ))
-            cur.execute("UPDATE exceptions SET status='awaiting_approval' WHERE id=%s", (exc_id,))
+            # Also populate the recommendation and recommended_sql in the exceptions table
+            cur.execute("""
+                UPDATE exceptions
+                SET status='awaiting_approval',
+                    recommendation=%s,
+                    recommended_sql=%s
+                WHERE id=%s
+            """, (
+                json.dumps(recommendation),
+                recommended_sql,
+                exc_id,
+            ))
         conn.commit()
 
         done_event = {

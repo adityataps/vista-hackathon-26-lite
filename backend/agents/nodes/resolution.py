@@ -17,12 +17,19 @@ You synthesise findings from specialist agents and produce a single clear recomm
 for the human analyst.
 
 Your output must be a JSON object with exactly these keys:
-  action      — one sentence: what the analyst should do
-  rationale   — 2-3 sentences: why, citing specific evidence from the investigation
-  confidence  — a float 0.0–1.0
+  action           — one sentence: what the analyst should do
+  rationale        — 2-3 sentences: why, citing specific evidence from the investigation
+  confidence       — a float 0.0–1.0
   requires_human_approval — always true
+  sql              — (OPTIONAL) a SQL statement that directly fixes the exception, if applicable
+                     Only include this if the fix is straightforward and safe to auto-execute.
+                     For payment corrections, use UPDATE statements targeting the payments or
+                     exceptions tables based on payment identifiers (msg_id, uetr).
+                     Example: UPDATE payments SET debtor_iban='...' WHERE msg_id='...' (if IBAN typo)
+                     Example: UPDATE exceptions SET status='cancelled' WHERE msg_id='...' (if duplicate)
 
-Do NOT recommend any autonomous action. The analyst makes the final decision."""
+Do NOT recommend any autonomous action. The analyst makes the final decision.
+The sql field is optional — omit it if human review of each detail is safer than auto-execution."""
 
 
 def _load_kb() -> dict:
@@ -97,7 +104,8 @@ async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
         f"Compliance findings:\n{compliance.get('raw', 'N/A')}\n\n"
         f"Prior resolution history:\n{json.dumps(history_results)}\n\n"
         "Synthesise these findings and produce your recommendation as a JSON object with "
-        "keys: action, rationale, confidence, requires_human_approval."
+        "keys: action, rationale, confidence, requires_human_approval, and optionally sql "
+        "(if a safe auto-fix SQL statement applies)."
     )
 
     try:

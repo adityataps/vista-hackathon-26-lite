@@ -367,3 +367,7 @@ cython_debug/
 
 # SQLite dev databases
 *.db
+
+# Local payment drop artifacts
+local-payment-drop/payments/*.xml
+

@@ -28,6 +28,10 @@ def approve(report_id: str):
     conn = get_db()
     if not conn:
         raise HTTPException(status_code=503, detail="DB unavailable")
+
+    exception_id = None
+    recommended_sql = None
+
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE investigations SET approval_status='approved' WHERE id=%s RETURNING exception_id",
@@ -36,10 +40,48 @@ def approve(report_id: str):
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Investigation not found")
-        cur.execute("UPDATE exceptions SET status='resolved' WHERE id=%s", (row[0],))
-    conn.commit()
-    logger.info("Investigation %s approved", inv_id)
-    return {"status": "approved", "report_id": report_id}
+        exception_id = row[0]
+
+        # Fetch the recommended SQL from the exception
+        cur.execute(
+            "SELECT recommended_sql FROM exceptions WHERE id=%s",
+            (exception_id,)
+        )
+        sql_row = cur.fetchone()
+        if sql_row and sql_row[0]:
+            recommended_sql = sql_row[0]
+
+        cur.execute("UPDATE exceptions SET status='resolved' WHERE id=%s", (exception_id,))
+
+    # Execute the recommended SQL if it exists
+    sql_execution_result = None
+    if recommended_sql:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(recommended_sql)
+                # Fetch result if it's a SELECT query
+                sql_execution_result = {
+                    "executed": True,
+                    "rows_affected": cur.rowcount,
+                    "message": "Recommended action executed successfully"
+                }
+            conn.commit()
+            logger.info("Investigation %s approved and recommended SQL executed", inv_id)
+        except Exception as exc:
+            logger.error("Failed to execute recommended SQL for investigation %s: %s", inv_id, exc)
+            sql_execution_result = {
+                "executed": False,
+                "error": str(exc),
+                "message": "Failed to execute recommended action"
+            }
+    else:
+        logger.info("Investigation %s approved (no recommended SQL)", inv_id)
+
+    response = {"status": "approved", "report_id": report_id}
+    if sql_execution_result:
+        response["sql_execution"] = sql_execution_result
+
+    return response
 
 
 @router.post("/api/resolutions/{report_id}/reject")

@@ -103,6 +103,10 @@ def _ensure_schema(conn):
         cur.execute("ALTER TABLE exceptions ADD COLUMN IF NOT EXISTS precheck_input_tokens INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE exceptions ADD COLUMN IF NOT EXISTS precheck_output_tokens INTEGER DEFAULT 0")
 
+        # Agent recommendation and resolution columns
+        cur.execute("ALTER TABLE exceptions ADD COLUMN IF NOT EXISTS recommendation JSONB")
+        cur.execute("ALTER TABLE exceptions ADD COLUMN IF NOT EXISTS recommended_sql TEXT")
+
         # Token tracking on investigations
         cur.execute("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0")
