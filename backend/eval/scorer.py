@@ -48,7 +48,10 @@ def score(meta: dict, final_state: dict) -> EvalResult:
 
     # Check 3: Keywords + Confidence
     confidence = rec.get("confidence")
-    result.confidence = float(confidence) if confidence is not None else None
+    try:
+        result.confidence = float(confidence) if confidence is not None else None
+    except (TypeError, ValueError):
+        result.errors.append(f"Could not parse confidence={confidence!r} as float")
 
     text = f"{rec.get('action', '')} {rec.get('rationale', '')}".lower()
     keywords = meta.get("required_keywords", [])

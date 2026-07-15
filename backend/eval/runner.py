@@ -43,5 +43,10 @@ def run_all() -> list[EvalResult]:
     results = []
     for fixture_path in sorted(FIXTURES_DIR.glob("*.json")):
         print(f"  Running {fixture_path.stem}...", flush=True)
-        results.append(run_fixture(fixture_path))
+        try:
+            results.append(run_fixture(fixture_path))
+        except Exception as exc:
+            failed = EvalResult(scenario=fixture_path.stem)
+            failed.errors.append(f"Runner error: {exc}")
+            results.append(failed)
     return results
