@@ -79,7 +79,7 @@ export default function ExceptionQueue() {
       return;
     }
 
-    if (row.status === 'investigating') {
+    if (row.status === 'investigating' || row.status === 'evaluating') {
       runningRef.current = true;
       setRunning(true);
       cancelRef.current = streamLiveInvestigation(
@@ -116,8 +116,11 @@ export default function ExceptionQueue() {
       setSelected((prev) => {
         if (!prev) return prev;
         const updated = data.find((r) => r.tx_id === prev.tx_id);
-        if (updated && ['awaiting_approval', 'resolved', 'rejected'].includes(updated.status)
-            && !['awaiting_approval', 'resolved', 'rejected'].includes(prev.status)) {
+        const nowDone = updated && ['awaiting_approval', 'resolved', 'rejected'].includes(updated.status);
+        const wasDone = ['awaiting_approval', 'resolved', 'rejected'].includes(prev.status);
+        // Only auto-load report when the exception just finished AND no live stream
+        // is running (stream's onDone will handle the report if it's connected).
+        if (nowDone && !wasDone && !runningRef.current) {
           loadStoredReport(updated);
         }
         return updated ?? prev;
