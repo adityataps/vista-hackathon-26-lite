@@ -24,7 +24,7 @@ resource "aws_ecs_task_definition" "backend" {
       { name = "GUARDRAIL_ID",        value = aws_bedrock_guardrail.pay_investigator.guardrail_id },
       { name = "GUARDRAIL_VERSION",   value = aws_bedrock_guardrail_version.pay_investigator.version },
       { name = "KNOWLEDGE_BASE_ID",   value = aws_bedrockagent_knowledge_base.main.id },
-      { name = "BEDROCK_MODEL_ID",    value = "anthropic.claude-sonnet-4-6" },
+      { name = "BEDROCK_MODEL_ID",    value = "us.anthropic.claude-sonnet-4-6" },
     ]
     secrets = [
       { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.db_url.arn },

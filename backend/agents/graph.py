@@ -45,7 +45,7 @@ def make_llm() -> ChatBedrock:
     return ChatBedrock(
         model_id=os.environ.get(
             "BEDROCK_MODEL_ID",
-            "anthropic.claude-sonnet-4-6",
+            "us.anthropic.claude-sonnet-4-6",
         ),
         region_name=os.environ.get("AWS_REGION", "us-west-2"),
     )
