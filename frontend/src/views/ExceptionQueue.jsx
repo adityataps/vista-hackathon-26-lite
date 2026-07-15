@@ -29,6 +29,16 @@ const SUGGESTIONS = {
   default:   ['Why this recommendation?', 'Show related payments from the same sender', 'What is the risk if I approve this?'],
 };
 
+const SORT_OPTIONS = [
+  { value: 'default',      label: 'Default order' },
+  { value: 'priority',     label: 'Priority (pending first)' },
+  { value: 'amount-desc',  label: 'Amount ↓' },
+  { value: 'amount-asc',   label: 'Amount ↑' },
+  { value: 'sla',          label: 'SLA (soonest first)' },
+];
+
+const TYPE_FILTERS = ['all', 'iban', 'sanctions', 'duplicate', 'fx', 'iso'];
+
 function slaWarning(settlementDate) {
   if (!settlementDate) return false;
   const hoursUntil = (new Date(settlementDate) - Date.now()) / 3_600_000;
@@ -47,11 +57,20 @@ export default function ExceptionQueue() {
   const [chatBusy, setChatBusy] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [archive, setArchive] = useState([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [sortBy, setSortBy] = useState('default');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [animatingIds, setAnimatingIds] = useState(new Set());
+
   const cancelRef = useRef(null);
   const streamRef = useRef(null);
   const chatEndRef = useRef(null);
-  const seenTxIdsRef = useRef(new Set());
   const runningRef = useRef(false);
+  const knownIdsRef = useRef(new Set());
+  const modalOpenRef = useRef(false);
+
+  useEffect(() => { modalOpenRef.current = modalOpen; }, [modalOpen]);
 
   function loadStoredReport(row) {
     getInvestigationReport(row.tx_id).then(({ data }) => {
@@ -106,23 +125,46 @@ export default function ExceptionQueue() {
       return;
     }
 
-    // pending / evaluating — backend will pick it up automatically
     setLines([{ agent: 'System', cls: 'intake', text: 'Queued for investigation — results will appear here when ready.' }]);
     runningRef.current = false;
     setRunning(false);
   }
 
+  function openModal(row) {
+    setModalOpen(true);
+    investigate(row);
+  }
+
+  function closeModal() {
+    if (runningRef.current) cancelRef.current?.();
+    setModalOpen(false);
+    setSelected(null);
+    setLines([]);
+    setReport(null);
+    setDecision(null);
+  }
+
   function fetchQueue() {
     getExceptions('active').then(({ data }) => {
+      const newIds = data.map(r => r.tx_id).filter(id => !knownIdsRef.current.has(id));
+      data.forEach(r => knownIdsRef.current.add(r.tx_id));
+      if (newIds.length > 0) {
+        setAnimatingIds(prev => new Set([...prev, ...newIds]));
+        setTimeout(() => {
+          setAnimatingIds(prev => {
+            const next = new Set(prev);
+            newIds.forEach(id => next.delete(id));
+            return next;
+          });
+        }, 900);
+      }
+
       setQueue(data);
-      // If a selected exception just finished, load its report automatically
       setSelected((prev) => {
         if (!prev) return prev;
         const updated = data.find((r) => r.tx_id === prev.tx_id);
         const nowDone = updated && ['awaiting_approval', 'resolved', 'rejected'].includes(updated.status);
         const wasDone = ['awaiting_approval', 'resolved', 'rejected'].includes(prev.status);
-        // Only auto-load report when the exception just finished AND no live stream
-        // is running (stream's onDone will handle the report if it's connected).
         if (nowDone && !wasDone && !runningRef.current) {
           loadStoredReport(updated);
         }
@@ -135,6 +177,14 @@ export default function ExceptionQueue() {
     fetchQueue();
     const id = setInterval(fetchQueue, 5000);
     return () => { clearInterval(id); cancelRef.current?.(); };
+  }, []);
+
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === 'Escape' && modalOpenRef.current) closeModal();
+    }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
   useEffect(() => {
@@ -151,6 +201,7 @@ export default function ExceptionQueue() {
     await submitDecision(report.report_id, kind);
     fetchQueue();
     loadArchive();
+    setTimeout(() => setModalOpen(false), 1400);
   }
 
   async function ask(text) {
@@ -170,6 +221,33 @@ export default function ExceptionQueue() {
     setShowArchive(true);
   }
 
+  const filteredQueue = queue
+    .filter(row => {
+      if (typeFilter !== 'all' && row.type_key !== typeFilter) return false;
+      if (!searchText) return true;
+      const q = searchText.toLowerCase();
+      return (
+        row.tx_id?.toLowerCase().includes(q) ||
+        row.type?.toLowerCase().includes(q) ||
+        row.sender?.toLowerCase().includes(q) ||
+        row.receiver?.toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      if (sortBy === 'amount-desc') return parseFloat(b.amount || 0) - parseFloat(a.amount || 0);
+      if (sortBy === 'amount-asc')  return parseFloat(a.amount || 0) - parseFloat(b.amount || 0);
+      if (sortBy === 'priority') {
+        const ord = { awaiting_approval: 0, pending: 1, evaluating: 2, investigating: 3, resolved: 4, rejected: 5 };
+        return (ord[a.status] ?? 9) - (ord[b.status] ?? 9);
+      }
+      if (sortBy === 'sla') {
+        const da = a.settlement_date ? new Date(a.settlement_date) : new Date('9999-12-31');
+        const db = b.settlement_date ? new Date(b.settlement_date) : new Date('9999-12-31');
+        return da - db;
+      }
+      return 0;
+    });
+
   const suggestions = selected ? (SUGGESTIONS[selected.type_key] ?? SUGGESTIONS.default) : [];
   const pendingCount = queue.filter((r) => r.status === 'pending' || r.status === 'awaiting_approval').length;
 
@@ -180,6 +258,43 @@ export default function ExceptionQueue() {
           <h2 style={{ fontSize: 15 }}>Exception Queue</h2>
           <span className="pill gray">{pendingCount} pending</span>
         </div>
+
+        <div className="queue-toolbar">
+          <div className="search-wrap">
+            <span className="search-icon">🔍</span>
+            <input
+              className="search-input"
+              placeholder="Search by TX ID, type, sender, receiver…"
+              value={searchText}
+              onChange={e => setSearchText(e.target.value)}
+            />
+            {searchText && (
+              <button className="search-clear" onClick={() => setSearchText('')}>✕</button>
+            )}
+          </div>
+          <select
+            className="sort-select"
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value)}
+          >
+            {SORT_OPTIONS.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="type-filters">
+          {TYPE_FILTERS.map(t => (
+            <button
+              key={t}
+              className={`type-filter-btn ${typeFilter === t ? 'active' : ''}`}
+              onClick={() => setTypeFilter(t)}
+            >
+              {t === 'all' ? 'All types' : t.toUpperCase()}
+            </button>
+          ))}
+        </div>
+
         <table>
           <thead>
             <tr>
@@ -188,13 +303,14 @@ export default function ExceptionQueue() {
             </tr>
           </thead>
           <tbody>
-            {queue.map((row) => {
+            {filteredQueue.map((row) => {
               const pill = STATUS_PILL[row.status] ?? STATUS_PILL.pending;
+              const isNew = animatingIds.has(row.tx_id);
               return (
                 <tr
                   key={row.tx_id}
-                  className={`clickable ${selected?.tx_id === row.tx_id ? 'selected' : ''}`}
-                  onClick={() => investigate(row)}
+                  className={`clickable${isNew ? ' row-new' : ''}`}
+                  onClick={() => openModal(row)}
                 >
                   <td className="num">
                     {row.tx_id}
@@ -221,6 +337,9 @@ export default function ExceptionQueue() {
                 </tr>
               );
             })}
+            {filteredQueue.length === 0 && queue.length > 0 && (
+              <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No results match current filter</td></tr>
+            )}
             {queue.length === 0 && (
               <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No active exceptions</td></tr>
             )}
@@ -228,89 +347,103 @@ export default function ExceptionQueue() {
         </table>
       </div>
 
-      {selected && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <h3>
-            Agent Investigation — {selected.tx_id}
-            {running && <span className="spinner" style={{ marginLeft: 8 }} />}
-          </h3>
-          <div className="stream" ref={streamRef}>
-            {lines.map((l, i) => (
-              <div className="stream-line" key={i}>
-                <span className={`agent ${l.cls}`}>{l.agent === 'tool' ? '' : `${l.agent}:`}</span>
-                {l.cls === 'tool'
-                  ? <span className="txt">{l.text}</span>
-                  : <div className="txt md"><Md>{l.text}</Md></div>}
+      {modalOpen && selected && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span className={`pill ${TYPE_PILL[selected.type_key] ?? 'gray'}`} style={{ fontSize: 11 }}>
+                  {selected.type}
+                </span>
+                <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>
+                  {selected.tx_id}
+                </span>
+                {running && <span className="spinner" />}
               </div>
-            ))}
-            {running && <span className="cursor" />}
-          </div>
+              <button className="modal-close" onClick={closeModal} title="Close (Esc)">✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="stream" ref={streamRef}>
+                {lines.map((l, i) => (
+                  <div className="stream-line" key={i}>
+                    <span className={`agent ${l.cls}`}>{l.agent === 'tool' ? '' : `${l.agent}:`}</span>
+                    {l.cls === 'tool'
+                      ? <span className="txt">{l.text}</span>
+                      : <div className="txt md"><Md>{l.text}</Md></div>}
+                  </div>
+                ))}
+                {running && <span className="cursor" />}
+              </div>
 
-          {report?.recommendation && (
-            <div className={`hitl ${decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : ''}`}>
-              <div className="msg">
-                {decision === null && <>
-                  <strong>⏳ Awaiting human approval</strong>
-                  <div style={{ marginTop: 6 }}>{report.recommendation.action}</div>
-                  <div className="footnote">{report.recommendation.rationale}</div>
-                </>}
-                {decision === 'approve' && <>
-                  <strong style={{ color: '#34d399' }}>✓ Approved &amp; executed</strong>
-                  <div className="footnote">execute_resolution() called with approval token · full trail written to audit log</div>
-                </>}
-                {decision === 'reject' && <>
-                  <strong style={{ color: '#f87171' }}>✖ Rejected</strong>
-                  <div className="footnote">Recommendation rejected — case returned to manual queue · decision logged to audit trail</div>
-                </>}
-              </div>
-              {decision === null && (
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn approve" onClick={() => decide('approve')}>Approve</button>
-                  <button className="btn reject" onClick={() => decide('reject')}>Reject</button>
+              {report?.recommendation && (
+                <div className={`hitl ${decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : ''}`}>
+                  <div className="msg">
+                    {decision === null && <>
+                      <strong>⏳ Awaiting human approval</strong>
+                      <div style={{ marginTop: 6 }}>{report.recommendation.action}</div>
+                      <div className="footnote">{report.recommendation.rationale}</div>
+                    </>}
+                    {decision === 'approve' && <>
+                      <strong style={{ color: '#34d399' }}>✓ Approved &amp; executed</strong>
+                      <div className="footnote">execute_resolution() called with approval token · full trail written to audit log</div>
+                    </>}
+                    {decision === 'reject' && <>
+                      <strong style={{ color: '#f87171' }}>✖ Rejected</strong>
+                      <div className="footnote">Recommendation rejected — case returned to manual queue · decision logged to audit trail</div>
+                    </>}
+                  </div>
+                  {decision === null && (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn approve" onClick={() => decide('approve')}>Approve</button>
+                      <button className="btn reject" onClick={() => decide('reject')}>Reject</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {report && (
+                <div>
+                  <h3 style={{ margin: '4px 0 10px', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' }}>
+                    Ask a question about this investigation
+                  </h3>
+                  <div className="chat">
+                    {chat.length > 0 && (
+                      <div className="chat-history">
+                        {chat.map((m, i) => (
+                          <div className={`msg-row ${m.role}`} key={i}>
+                            <div className="msg-bubble">
+                              {m.tool && <span className="tool-note">🔧 [calls {m.tool}]</span>}
+                              {m.role === 'bot' ? <Md>{'🤖 ' + m.text}</Md> : m.text}
+                            </div>
+                          </div>
+                        ))}
+                        {chatBusy && (
+                          <div className="msg-row bot">
+                            <div className="msg-bubble"><span className="spinner" /> thinking…</div>
+                          </div>
+                        )}
+                        <div ref={chatEndRef} />
+                      </div>
+                    )}
+                    <div className="suggestions">
+                      {suggestions.map((s) => (
+                        <button key={s} className="suggestion" onClick={() => ask(s)}>{s}</button>
+                      ))}
+                    </div>
+                    <div className="chat-input">
+                      <input
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && ask()}
+                        placeholder="e.g. Why did you flag this IBAN specifically?"
+                      />
+                      <button className="btn primary" onClick={() => ask()} disabled={chatBusy}>Send</button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
-          )}
-
-          {report && (
-            <div style={{ marginTop: 18 }}>
-              <h3>Ask a question about this investigation</h3>
-              <div className="chat">
-                {chat.length > 0 && (
-                  <div className="chat-history">
-                    {chat.map((m, i) => (
-                      <div className={`msg-row ${m.role}`} key={i}>
-                        <div className="msg-bubble">
-                          {m.tool && <span className="tool-note">🔧 [calls {m.tool}]</span>}
-                          {m.role === 'bot' ? <Md>{'🤖 ' + m.text}</Md> : m.text}
-                        </div>
-                      </div>
-                    ))}
-                    {chatBusy && (
-                      <div className="msg-row bot">
-                        <div className="msg-bubble"><span className="spinner" /> thinking…</div>
-                      </div>
-                    )}
-                    <div ref={chatEndRef} />
-                  </div>
-                )}
-                <div className="suggestions">
-                  {suggestions.map((s) => (
-                    <button key={s} className="suggestion" onClick={() => ask(s)}>{s}</button>
-                  ))}
-                </div>
-                <div className="chat-input">
-                  <input
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && ask()}
-                    placeholder="e.g. Why did you flag this IBAN specifically?"
-                  />
-                  <button className="btn primary" onClick={() => ask()} disabled={chatBusy}>Send</button>
-                </div>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -325,7 +458,7 @@ export default function ExceptionQueue() {
             {showArchive ? 'Hide archive' : `Show resolved (${archive.length || '…'})`}
           </button>
         </div>
-        {showArchive && (
+        <div className={`archive-collapse ${showArchive ? 'open' : ''}`}>
           <table>
             <thead>
               <tr>
@@ -357,7 +490,7 @@ export default function ExceptionQueue() {
               )}
             </tbody>
           </table>
-        )}
+        </div>
       </div>
     </>
   );

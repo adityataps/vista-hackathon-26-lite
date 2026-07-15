@@ -146,7 +146,7 @@ export default function OperationsDashboard() {
             )}
           </h3>
           <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={tokenCosts} layout="vertical" margin={{ left: 160 }}>
+            <BarChart data={tokenCosts} layout="vertical" margin={{ left: 10, right: 16, top: 5, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
               <XAxis type="number" stroke="#8fa1c0" fontSize={11} tickFormatter={(v) => `$${v.toFixed(3)}`} />
               <YAxis type="category" dataKey="type" stroke="#8fa1c0" fontSize={11} width={160} />

@@ -60,20 +60,20 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <button
-          className="btn primary"
-          style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}
-          onClick={generate}
-          disabled={genState === 'running'}
-        >
-          {genState === 'idle' && '⚡ Generate Payments'}
-          {genState === 'running' && <><span className="spinner" style={{ marginRight: 8 }} />Generating…</>}
-          {genState === 'done' && '✓ Payments generated'}
-        </button>
         <div className="conn" title="Backend connectivity">
           <span className={`dot ${backendLive ? 'live' : 'mock'}`} />
           {backendLive === null ? 'Connecting…' : backendLive ? 'Backend live' : 'Demo mode (mock data)'}
         </div>
+        <button
+          className="btn primary"
+          style={{ whiteSpace: 'nowrap' }}
+          onClick={generate}
+          disabled={genState === 'running'}
+        >
+          {genState === 'idle' && '(Demo) ⚡ Generate Payments'}
+          {genState === 'running' && <><span className="spinner" style={{ marginRight: 8 }} />Generating…</>}
+          {genState === 'done' && '✓ Payments generated'}
+        </button>
       </header>
 
       <main className="main">
