@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   getKpis, getVolume, getSavings, getExceptionBreakdown,
-  getTokenCosts, getThroughput, getAiStats,
+  getTokenCosts, getThroughput, getAiStats, getCorrespondents,
 } from '../api/client.js';
 
 const tooltipStyle = {
@@ -24,6 +24,7 @@ export default function OperationsDashboard() {
   const [tokenCosts, setTokenCosts] = useState([]);
   const [throughput, setThroughput] = useState([]);
   const [ai, setAi] = useState(null);
+  const [correspondents, setCorrespondents] = useState([]);
 
   useEffect(() => {
     getKpis().then(({ data }) => setKpis(data));
@@ -33,6 +34,7 @@ export default function OperationsDashboard() {
     getTokenCosts().then(({ data }) => setTokenCosts(data));
     getThroughput().then(({ data }) => setThroughput(data));
     getAiStats().then(({ data }) => setAi(data));
+    getCorrespondents().then(({ data }) => setCorrespondents(data));
   }, []);
 
   if (!kpis) return <div className="card">Loading…</div>;
@@ -131,6 +133,32 @@ export default function OperationsDashboard() {
             </div>
           )}
         </div>
+
+        {correspondents.length > 0 && (
+          <div className="card">
+            <h3>Correspondent Health</h3>
+            <table>
+              <thead>
+                <tr><th>BIC</th><th>Country</th><th>Status</th><th style={{ textAlign: 'right' }}>Avg Processing</th><th style={{ textAlign: 'right' }}>Delayed</th></tr>
+              </thead>
+              <tbody>
+                {correspondents.map((c) => (
+                  <tr key={c.bic}>
+                    <td className="num">{c.bank || c.bic}</td>
+                    <td>{c.country}</td>
+                    <td>
+                      <span className={`pill ${c.status === 'normal' ? 'green' : c.status === 'degraded' ? 'yellow' : 'red'}`}>
+                        {c.status === 'normal' ? '✓ Normal' : c.status === 'degraded' ? '⚠ Degraded' : '✖ Outage'}
+                      </span>
+                    </td>
+                    <td className="num">{c.avg_processing_min ? `${c.avg_processing_min}m` : '—'}</td>
+                    <td className="num" style={{ color: c.delayed > 0 ? '#f87171' : undefined }}>{c.delayed}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <div className="card">
           <h3>AI Cost &amp; Throughput</h3>

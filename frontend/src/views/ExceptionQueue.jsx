@@ -60,9 +60,8 @@ export default function ExceptionQueue() {
     if (!report) return;
     setDecision(kind);
     await submitDecision(report.report_id, kind);
-    if (kind === 'approve' && selected) {
-      setQueue((q) => q.map((r) => (r.tx_id === selected.tx_id ? { ...r, status: 'resolved' } : r)));
-    }
+    // Re-fetch the queue from the API so status reflects the DB, not an optimistic guess
+    getExceptions().then(({ data }) => setQueue(data));
   }
 
   async function ask(text) {

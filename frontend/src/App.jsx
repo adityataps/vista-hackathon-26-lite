@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import OperationsDashboard from './views/OperationsDashboard.jsx';
 import ExceptionQueue from './views/ExceptionQueue.jsx';
-import { probeBackend, getExceptions, generateDemoPayments } from './api/client.js';
+import { probeBackend, getKpis, generateDemoPayments } from './api/client.js';
 
 const TABS = [
   { id: 'dashboard', label: 'Operations Dashboard' },
@@ -14,21 +14,20 @@ export default function App() {
   const [openExceptions, setOpenExceptions] = useState(0);
   const [genState, setGenState] = useState('idle'); // idle | running | done
 
+  function refreshBadge() {
+    getKpis().then(({ data }) => setOpenExceptions(data.exceptions_open ?? 0));
+  }
+
   useEffect(() => {
     probeBackend().then(setBackendLive);
-    getExceptions().then(({ data }) =>
-      setOpenExceptions(data.filter((e) => e.status === 'pending').length)
-    );
+    refreshBadge();
   }, []);
 
   async function generate() {
     if (genState === 'running') return;
     setGenState('running');
     await generateDemoPayments();
-    // refresh queue badge — the generator writes new payments the agent picks up
-    getExceptions().then(({ data }) =>
-      setOpenExceptions(data.filter((e) => e.status === 'pending').length)
-    );
+    refreshBadge();
     setGenState('done');
     setTimeout(() => setGenState('idle'), 3000);
   }
