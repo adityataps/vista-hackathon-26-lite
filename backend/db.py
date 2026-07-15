@@ -17,13 +17,6 @@ def get_db():
         if _db_conn is None or _db_conn.closed:
             _db_conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
             _schema_done = False
-        # Recover from any aborted transaction left by a previous failed operation.
-        try:
-            _db_conn.rollback()
-        except Exception:
-            _db_conn = None
-            _schema_done = False
-            return get_db()
         # Run schema migration on first connection, and retry on every call until
         # all tables are confirmed created (individual failures are swallowed inside).
         if not _schema_done:

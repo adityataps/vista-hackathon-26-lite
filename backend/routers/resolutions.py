@@ -50,13 +50,14 @@ def approve(report_id: str):
 
         cur.execute("UPDATE exceptions SET status='resolved' WHERE id=%s", (exception_id,))
 
+    conn.commit()  # always commit the status updates before attempting optional SQL
+
     # Execute the recommended SQL if it exists
     sql_execution_result = None
     if recommended_sql:
         try:
             with conn.cursor() as cur:
                 cur.execute(recommended_sql)
-                # Fetch result if it's a SELECT query
                 sql_execution_result = {
                     "executed": True,
                     "rows_affected": cur.rowcount,
