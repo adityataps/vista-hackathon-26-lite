@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -37,27 +37,48 @@ def _format_amount(amount, currency) -> str:
 
 
 @router.get("/api/exceptions")
-def list_exceptions():
+def list_exceptions(status: Optional[str] = Query(None)):
     conn = get_db()
     if not conn:
         return []
+
+    if status == "active":
+        where_clause = "WHERE e.status NOT IN ('resolved', 'rejected')"
+    elif status is not None and "resolved" in status:
+        where_clause = "WHERE e.status IN ('resolved', 'rejected')"
+    else:
+        where_clause = ""
+
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             SELECT e.id, e.msg_id, e.uetr, e.detected_errors, e.status, e.created_at,
-                   p.id as payment_db_id, p.amount, p.currency,
-                   p.debtor_name, p.creditor_name, p.sender_bic, p.receiver_bic
+                   e.precheck_summary,
+                   p.id AS payment_db_id, p.amount, p.currency,
+                   p.debtor_name, p.creditor_name, p.sender_bic, p.receiver_bic,
+                   p.settlement_date,
+                   i.completed_at   AS resolved_at,
+                   i.recommendation->>'action' AS recommendation_action
             FROM exceptions e
             LEFT JOIN payments p ON p.msg_id = e.msg_id
-            ORDER BY e.created_at DESC
-            LIMIT 50
+            LEFT JOIN LATERAL (
+                SELECT completed_at, recommendation
+                FROM investigations
+                WHERE exception_id = e.id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) i ON true
+            {where_clause}
+            ORDER BY p.settlement_date ASC NULLS LAST, e.created_at DESC
+            LIMIT 100
         """)
         rows = cur.fetchall()
 
     result = []
     for row in rows:
-        (exc_id, msg_id, uetr, detected_errors, status, created_at,
-         payment_db_id, amount, currency, debtor_name, creditor_name,
-         sender_bic, receiver_bic) = row
+        (exc_id, msg_id, uetr, detected_errors, status_val, created_at,
+         precheck_summary, payment_db_id, amount, currency,
+         debtor_name, creditor_name, sender_bic, receiver_bic,
+         settlement_date, resolved_at, recommendation_action) = row
 
         errors = detected_errors if isinstance(detected_errors, list) else []
         first_code = errors[0].get("code", "") if errors else ""
@@ -73,8 +94,12 @@ def list_exceptions():
             "amount": _format_amount(amount, currency) if amount else "—",
             "sender": debtor_name or sender_bic or "—",
             "receiver": creditor_name or receiver_bic or "—",
-            "status": status,
+            "status": status_val,
             "created_at": created_at.isoformat() if created_at else None,
+            "settlement_date": settlement_date.isoformat() if settlement_date else None,
+            "precheck_summary": precheck_summary,
+            "resolved_at": resolved_at.isoformat() if resolved_at else None,
+            "recommendation_action": recommendation_action,
         })
     return result
 

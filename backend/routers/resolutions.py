@@ -56,7 +56,7 @@ def reject(report_id: str):
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Investigation not found")
-        cur.execute("UPDATE exceptions SET status='escalated' WHERE id=%s", (row[0],))
+        cur.execute("UPDATE exceptions SET status='rejected' WHERE id=%s", (row[0],))
     conn.commit()
     logger.info("Investigation %s rejected", inv_id)
     return {"status": "rejected", "report_id": report_id}
