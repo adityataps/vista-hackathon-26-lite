@@ -39,10 +39,24 @@ const SORT_OPTIONS = [
 
 const TYPE_FILTERS = ['all', 'iban', 'sanctions', 'duplicate', 'fx', 'iso'];
 
-function slaWarning(settlementDate) {
-  if (!settlementDate) return false;
-  const hoursUntil = (new Date(settlementDate) - Date.now()) / 3_600_000;
-  return hoursUntil >= 0 && hoursUntil <= 24;
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const secs = (Date.now() - new Date(iso)) / 1000;
+  if (secs < 60)   return `${Math.round(secs)}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
+function settlementCell(iso) {
+  if (!iso) return { label: '—', cls: null, urgent: false };
+  const d = new Date(iso);
+  const hoursUntil = (d - Date.now()) / 3_600_000;
+  const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (hoursUntil >= 0 && hoursUntil <= 24)  return { label, cls: 'sla-red',    urgent: true };
+  if (hoursUntil >= 0 && hoursUntil <= 72)  return { label, cls: 'sla-yellow', urgent: false };
+  if (hoursUntil < 0)                       return { label, cls: 'sla-past',   urgent: false };
+  return { label, cls: null, urgent: false };
 }
 
 export default function ExceptionQueue() {
@@ -295,56 +309,79 @@ export default function ExceptionQueue() {
           ))}
         </div>
 
-        <table>
-          <thead>
-            <tr>
-              <th>TX ID</th><th>Type</th><th>Amount</th>
-              <th>Sender → Receiver</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredQueue.map((row) => {
-              const pill = STATUS_PILL[row.status] ?? STATUS_PILL.pending;
-              const isNew = animatingIds.has(row.tx_id);
-              return (
-                <tr
-                  key={row.tx_id}
-                  className={`clickable${isNew ? ' row-new' : ''}`}
-                  onClick={() => openModal(row)}
-                >
-                  <td className="num">
-                    {row.tx_id}
-                    {slaWarning(row.settlement_date) && (
-                      <span className="pill orange" style={{ marginLeft: 6, fontSize: 10 }}>⚠ SLA</span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`pill ${TYPE_PILL[row.type_key] ?? 'gray'}`}>{row.type}</span>
-                    {row.precheck_summary?.action_hint && (
-                      <div style={{ fontSize: 11, color: '#8fa1c0', marginTop: 2 }}>
-                        {row.precheck_summary.action_hint.slice(0, 80)}
-                      </div>
-                    )}
-                  </td>
-                  <td className="num">{row.amount}</td>
-                  <td style={{ color: '#8fa1c0' }}>{row.sender} → {row.receiver}</td>
-                  <td>
-                    <span className={`pill ${pill.cls}`}>
-                      {pill.spinner && <span className="spinner" style={{ marginRight: 4 }} />}
-                      {pill.label}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            {filteredQueue.length === 0 && queue.length > 0 && (
-              <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No results match current filter</td></tr>
-            )}
-            {queue.length === 0 && (
-              <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No active exceptions</td></tr>
-            )}
-          </tbody>
-        </table>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ minWidth: 960 }}>
+            <thead>
+              <tr>
+                <th>TX ID</th>
+                <th>Type</th>
+                <th>Error Code</th>
+                <th style={{ textAlign: 'right' }}>Amount</th>
+                <th>Sender → Receiver</th>
+                <th>Created</th>
+                <th>Settlement</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredQueue.map((row) => {
+                const pill = STATUS_PILL[row.status] ?? STATUS_PILL.pending;
+                const isNew = animatingIds.has(row.tx_id);
+                const sla = settlementCell(row.settlement_date);
+                return (
+                  <tr
+                    key={row.tx_id}
+                    className={`clickable${isNew ? ' row-new' : ''}`}
+                    onClick={() => openModal(row)}
+                  >
+                    <td className="num">{row.tx_id}</td>
+                    <td>
+                      <span className={`pill ${TYPE_PILL[row.type_key] ?? 'gray'}`}>{row.type}</span>
+                      {row.precheck_summary?.action_hint && (
+                        <div style={{ fontSize: 11, color: '#8fa1c0', marginTop: 2 }}>
+                          {row.precheck_summary.action_hint.slice(0, 60)}
+                        </div>
+                      )}
+                    </td>
+                    <td className="num" style={{ fontSize: 11.5, color: '#8fa1c0' }}
+                        title={row.error_code ?? ''}>
+                      {row.error_code ? row.error_code.replace(/_/g, '_​') : '—'}
+                    </td>
+                    <td className="num" style={{ textAlign: 'right' }}>{row.amount}</td>
+                    <td style={{ color: '#8fa1c0', fontSize: 12.5 }}>
+                      <div>{row.sender}</div>
+                      <div style={{ fontSize: 11, marginTop: 1 }}>→ {row.receiver}</div>
+                    </td>
+                    <td style={{ color: '#8fa1c0', fontSize: 12, whiteSpace: 'nowrap' }}>
+                      {timeAgo(row.created_at)}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
+                      {sla.cls ? (
+                        <span className={`sla-date ${sla.cls}`}>
+                          {sla.urgent && '⚠ '}{sla.label}
+                        </span>
+                      ) : (
+                        <span style={{ color: '#8fa1c0' }}>{sla.label}</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`pill ${pill.cls}`}>
+                        {pill.spinner && <span className="spinner" style={{ marginRight: 4 }} />}
+                        {pill.label}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredQueue.length === 0 && queue.length > 0 && (
+                <tr><td colSpan={8} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No results match current filter</td></tr>
+              )}
+              {queue.length === 0 && (
+                <tr><td colSpan={8} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No active exceptions</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {modalOpen && selected && (

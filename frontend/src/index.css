@@ -240,8 +240,14 @@ tr.selected td { background: rgba(79,142,247,0.12); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------- Orange pill (awaiting approval, SLA) ---------- */
+/* ---------- Orange pill (awaiting approval) ---------- */
 .pill.orange { background: rgba(251,146,60,0.13); color: #fb923c; }
+
+/* ---------- SLA date cells ---------- */
+.sla-date { font-weight: 600; }
+.sla-date.sla-red    { color: #f87171; }
+.sla-date.sla-yellow { color: #fbbf24; }
+.sla-date.sla-past   { color: #8fa1c0; text-decoration: line-through; }
 
 /* ---------- Modal ---------- */
 @keyframes overlayIn {
