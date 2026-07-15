@@ -75,11 +75,11 @@ export function streamInvestigation(txId, onEvent, onDone) {
 
   (async () => {
     // --- try real backend (SSE over fetch) ---
+    // Note: no AbortController timeout here — investigations take 30-90s.
+    // The outer `cancelled` flag handles user-initiated cancellation.
     try {
-      const res = await apiFetch(`/api/exceptions/${txId}/investigate`, {
-        method: 'POST',
-        timeout: 4000,
-      });
+      const res = await fetch(`/api/exceptions/${txId}/investigate`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';

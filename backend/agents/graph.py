@@ -43,6 +43,9 @@ def build_graph(llm: ChatBedrock):
 
 def make_llm() -> ChatBedrock:
     return ChatBedrock(
-        model_id="anthropic.claude-sonnet-4-6",
+        model_id=os.environ.get(
+            "BEDROCK_MODEL_ID",
+            "us.anthropic.claude-sonnet-4-6-20251001-v1:0",
+        ),
         region_name=os.environ.get("AWS_REGION", "us-west-2"),
     )

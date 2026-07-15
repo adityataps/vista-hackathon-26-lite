@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Dev proxy: forwards /api/* to the local FastAPI backend (port 8080, as per
-// implementation plan). In production the ALB routes /api/* to the backend
-// target group, so the built frontend never needs to know the backend host.
+// Dev proxy: in production the ALB handles all routing.
+// /api/*  → local FastAPI backend (port 8080)
+// /rest/* → PostgREST on the ALB (direct DB reads)
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -12,6 +12,11 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+      },
+      '/rest': {
+        target: 'https://payinvestigator-1594041664.us-west-2.elb.amazonaws.com',
+        changeOrigin: true,
+        secure: false,
       },
     },
   },

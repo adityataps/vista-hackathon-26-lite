@@ -42,6 +42,18 @@ data "aws_iam_policy_document" "task_execution" {
     ]
     resources = ["arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/payinvestigator-*:*"]
   }
+
+  # Allow ECS to fetch the DB connection string from SSM at container start
+  statement {
+    actions   = ["ssm:GetParameters"]
+    resources = [aws_ssm_parameter.db_url.arn]
+  }
+
+  # Decrypt the SSM SecureString (uses the AWS-managed key for SSM)
+  statement {
+    actions   = ["kms:Decrypt"]
+    resources = ["arn:aws:kms:${var.region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+  }
 }
 
 resource "aws_iam_role_policy" "task_execution" {

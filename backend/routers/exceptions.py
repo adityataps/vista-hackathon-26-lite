@@ -255,12 +255,25 @@ async def investigate(tx_id: str):
     graph = get_graph()
 
     async def event_stream():
+        import asyncio
         accumulated_steps = []
         final_state = {}
         total_input_tokens = 0
         total_output_tokens = 0
 
-        async for event in graph.astream_events(initial_state, version="v2"):
+        # Wrap the async generator so we can emit SSE keepalive comments every
+        # 15 s of silence — without these the ALB idle_timeout kills the
+        # connection mid-investigation (NS_ERROR_NET_PARTIAL_TRANSFER).
+        aiter = graph.astream_events(initial_state, version="v2").__aiter__()
+        while True:
+            try:
+                event = await asyncio.wait_for(aiter.__anext__(), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+
             sse = _normalize_lg_event(event)
             if sse:
                 accumulated_steps.append({**sse, "ts": datetime.now(timezone.utc).isoformat()})
