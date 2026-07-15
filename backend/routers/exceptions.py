@@ -351,6 +351,100 @@ async def investigate(tx_id: str):
     )
 
 
+@router.get("/api/exceptions/{tx_id}/stream")
+async def stream_live_investigation(tx_id: str):
+    """
+    SSE endpoint that tails investigation_steps as the background worker writes them.
+    If the investigation is already complete it replays all steps then sends 'done'.
+    If not yet started it waits up to 30 s for the investigation row to appear.
+    """
+    conn = get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+
+    if tx_id.startswith("TX-"):
+        try:
+            id_val = int(tx_id[3:])
+            id_clause = "p.id = %s"
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid TX-id format")
+    else:
+        id_clause = "e.msg_id = %s"
+        id_val = tx_id
+
+    async def event_generator():
+        # Wait up to 30 s for an investigations row to be created
+        inv_id = None
+        for _ in range(30):
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT i.id
+                    FROM exceptions e
+                    LEFT JOIN payments p ON p.msg_id = e.msg_id
+                    LEFT JOIN LATERAL (
+                        SELECT id FROM investigations
+                        WHERE exception_id = e.id
+                        ORDER BY created_at DESC LIMIT 1
+                    ) i ON true
+                    WHERE {id_clause}
+                """, (id_val,))
+                row = cur.fetchone()
+            if row and row[0] is not None:
+                inv_id = row[0]
+                break
+            yield ": waiting\n\n"
+            await asyncio.sleep(1.0)
+
+        if inv_id is None:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Investigation did not start'})}\n\n"
+            return
+
+        seq = 0
+        while True:
+            # Fetch any new steps written since last poll
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT seq, agent, cls, step_text FROM investigation_steps"
+                    " WHERE inv_id = %s AND seq >= %s ORDER BY seq",
+                    (inv_id, seq),
+                )
+                rows = cur.fetchall()
+
+            for step_seq, agent, cls, text in rows:
+                yield f"data: {json.dumps({'agent': agent, 'cls': cls, 'text': text})}\n\n"
+                seq = step_seq + 1
+
+            # Check whether the investigation has completed
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT completed_at, recommendation FROM investigations WHERE id = %s",
+                    (inv_id,),
+                )
+                inv_row = cur.fetchone()
+
+            if inv_row and inv_row[0] is not None:
+                rec = inv_row[1] or {}
+                done_event = {
+                    "type": "done",
+                    "report_id": f"RPT-{inv_id:04d}",
+                    "recommendation": {
+                        "action": rec.get("action", "Review required"),
+                        "rationale": rec.get("rationale", ""),
+                    },
+                }
+                yield f"data: {json.dumps(done_event)}\n\n"
+                return
+
+            yield ": keepalive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/api/exceptions/{tx_id}/report")
 def get_investigation_report(tx_id: str):
     """Return the most recent completed investigation for an exception."""

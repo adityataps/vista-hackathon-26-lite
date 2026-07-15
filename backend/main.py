@@ -392,11 +392,66 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
     accumulated_steps, final_state = [], {}
     total_input_tokens = total_output_tokens = 0
 
+    # Incremental DB writes so the /stream endpoint can tail steps live.
+    # Tool events are flushed immediately; text chunks are merged per agent
+    # turn and flushed when the agent changes or a tool call interrupts.
+    _inc_seq = 0
+    _inc_pending = None  # {"agent", "cls", "text"} being accumulated
+
+    def _inc_flush():
+        nonlocal _inc_seq, _inc_pending
+        step = _inc_pending
+        _inc_pending = None  # clear before any await/raise so we never retry
+        if step is None:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO investigation_steps (inv_id, seq, agent, cls, step_text)"
+                    " VALUES (%s,%s,%s,%s,%s)",
+                    (inv_id, _inc_seq, step["agent"], step["cls"], step["text"]),
+                )
+            conn.commit()
+            _inc_seq += 1
+        except Exception as e:
+            logger.debug("investigation_steps flush skipped: %s", e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    def _inc_write(sse):
+        nonlocal _inc_seq, _inc_pending
+        if sse["cls"] == "tool":
+            _inc_flush()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO investigation_steps (inv_id, seq, agent, cls, step_text)"
+                        " VALUES (%s,%s,%s,%s,%s)",
+                        (inv_id, _inc_seq, sse["agent"], sse["cls"], sse["text"]),
+                    )
+                conn.commit()
+                _inc_seq += 1
+            except Exception as e:
+                logger.debug("investigation_steps tool write skipped: %s", e)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        else:
+            if _inc_pending and _inc_pending["agent"] == sse["agent"] and _inc_pending["cls"] == sse["cls"]:
+                _inc_pending["text"] += sse["text"]
+            else:
+                _inc_flush()
+                _inc_pending = {"agent": sse["agent"], "cls": sse["cls"], "text": sse["text"]}
+
     try:
         async for event in get_graph().astream_events(initial_state, version="v2"):
             sse = _normalize_lg_event(event)
             if sse:
                 accumulated_steps.append({**sse, "ts": datetime.now(timezone.utc).isoformat()})
+                _inc_write(sse)
 
             if event.get("event") == "on_chat_model_end":
                 output = event.get("data", {}).get("output")
@@ -409,6 +464,7 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
             if event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
                 final_state = event.get("data", {}).get("output", {})
 
+        _inc_flush()  # write any remaining buffered agent text
         recommendation = final_state.get("recommendation") or {}
         with conn.cursor() as cur:
             cur.execute("""
@@ -434,9 +490,16 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
         logger.info("Auto-investigation complete: %s (inv=%d)", tx_id, inv_id)
 
     except Exception as exc:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE exceptions SET status='pending' WHERE id=%s", (exc_id,))
-        conn.commit()
+        try:
+            conn.rollback()  # clear any aborted transaction before attempting status reset
+        except Exception:
+            pass
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE exceptions SET status='pending' WHERE id=%s", (exc_id,))
+            conn.commit()
+        except Exception:
+            pass  # best-effort; connection may be unrecoverable
         logger.error("Auto-investigation failed for %s: %s", tx_id, exc)
         raise
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getExceptions, getInvestigationReport, streamInvestigation, submitDecision, sendChat } from '../api/client.js';
+import { getExceptions, getInvestigationReport, streamLiveInvestigation, submitDecision, sendChat } from '../api/client.js';
 
 function Md({ children }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>;
@@ -82,9 +82,24 @@ export default function ExceptionQueue() {
     if (row.status === 'investigating') {
       runningRef.current = true;
       setRunning(true);
-      setLines([{ agent: 'System', cls: 'intake', text: 'Investigation running in background — waiting for results…' }]);
-      // Poll until complete; the 5s queue poll will update `queue`, which triggers
-      // a re-render; if the user clicks again the done branch above will fire.
+      cancelRef.current = streamLiveInvestigation(
+        row.tx_id,
+        (evt) => setLines((prev) => {
+          if (evt.cls === 'tool') return [...prev, evt];
+          const last = prev[prev.length - 1];
+          if (last && last.agent === evt.agent && last.cls === evt.cls) {
+            return [...prev.slice(0, -1), { ...last, text: last.text + evt.text }];
+          }
+          return [...prev, evt];
+        }),
+        (final) => {
+          runningRef.current = false;
+          setRunning(false);
+          if (final?.report_id) {
+            setReport({ report_id: final.report_id, recommendation: final.recommendation });
+          }
+        },
+      );
       return;
     }
 

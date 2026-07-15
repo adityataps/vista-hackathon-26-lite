@@ -126,6 +126,43 @@ export function streamInvestigation(txId, onEvent, onDone) {
   return () => { cancelled = true; };
 }
 
+/**
+ * Tails the background investigation as it runs (GET SSE).
+ * Same callback contract as streamInvestigation.
+ */
+export function streamLiveInvestigation(txId, onEvent, onDone) {
+  let cancelled = false;
+
+  (async () => {
+    try {
+      const res = await fetch(`/api/exceptions/${txId}/stream`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let final = null;
+      while (!cancelled) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const evt = JSON.parse(line.slice(5));
+          if (evt.type === 'done') final = evt;
+          else onEvent(evt);
+        }
+      }
+      if (!cancelled) onDone(final ?? { report_id: null, recommendation: null });
+    } catch {
+      if (!cancelled) onDone({ report_id: null, recommendation: null });
+    }
+  })();
+
+  return () => { cancelled = true; };
+}
+
 export async function submitDecision(reportId, decision) {
   try {
     await apiFetch(`/api/resolutions/${reportId}/${decision}`, { method: 'POST' });
