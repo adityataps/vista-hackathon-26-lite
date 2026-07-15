@@ -5,10 +5,14 @@ const TYPE_PILL = {
   iban: 'blue', sanctions: 'red', iso: 'blue', fx: 'yellow', duplicate: 'gray',
 };
 
+// Keyed by type_key from GET /api/exceptions so suggestions match the actual exception
 const SUGGESTIONS = {
-  'TX-00142': ['Why did you flag this IBAN specifically?', 'Are there other payments to this receiver this week?', 'If I approve this, what happens to the IBAN correction?'],
-  'TX-00138': ['Why did you recommend holding this payment?', 'Show me the full SDN entry for the match', 'Does the sender have prior compliance flags?'],
-  default: ['Why this recommendation?', 'Show related payments from the same sender'],
+  iban:      ['Why did you flag this IBAN specifically?', 'What is the corrected IBAN?', 'Are there other payments to this receiver this week?'],
+  sanctions: ['Why did you recommend holding this payment?', 'Show me the full SDN entry for the match', 'Does the sender have prior compliance flags?'],
+  duplicate: ['Which payment is the duplicate?', 'Should I cancel the second one or the first?', 'Was the UETR reused or is this a business duplicate?'],
+  fx:        ['What FX limit was breached?', 'What is the approved limit for this corridor?', 'Has this sender exceeded limits before?'],
+  iso:       ['Which mandatory field is missing?', 'Can the field be derived from other payment data?', 'What happens if I approve the repair?'],
+  default:   ['Why this recommendation?', 'Show related payments from the same sender', 'What is the risk if I approve this?'],
 };
 
 export default function ExceptionQueue() {
@@ -75,7 +79,7 @@ export default function ExceptionQueue() {
     setChatBusy(false);
   }
 
-  const suggestions = selected ? (SUGGESTIONS[selected.tx_id] ?? SUGGESTIONS.default) : [];
+  const suggestions = selected ? (SUGGESTIONS[selected.type_key] ?? SUGGESTIONS.default) : [];
 
   return (
     <>
