@@ -148,9 +148,10 @@ async def lifespan(app: FastAPI):
     conn = get_db()
     if conn:
         with conn.cursor() as cur:
-            # Reset stuck 'investigating' exceptions so the worker picks them up again
+            # Reset any exceptions interrupted mid-run by a previous server restart
             cur.execute(
-                "UPDATE exceptions SET status='pending' WHERE status='investigating'"
+                "UPDATE exceptions SET status='pending'"
+                " WHERE status IN ('investigating', 'evaluating')"
             )
             cur.execute(
                 "SELECT msg_id, precheck_summary FROM exceptions WHERE status = 'pending'"
