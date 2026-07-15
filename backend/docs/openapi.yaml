@@ -1,0 +1,1113 @@
+openapi: 3.1.0
+info:
+  title: PayInvestigator API
+  description: |
+    AI-powered payment exception investigation and monitoring API.
+
+    Built on AWS Bedrock (claude-sonnet-4-6) with LangGraph multi-agent orchestration.
+
+    ## Core flows
+
+    1. **Exception Investigation** — `POST /api/exceptions/{tx_id}/investigate` returns a
+       streaming SSE feed of agent reasoning steps. The pipeline runs:
+       Intake → Investigation → [Technical Diagnosis ‖ Compliance Agent] → Resolution.
+       The stream closes with a `done` event carrying the report ID and recommendation.
+
+    2. **Human-in-the-Loop gate** — every recommendation requires explicit analyst approval
+       (`POST /api/resolutions/{report_id}/approve`) before any corrective SQL is executed.
+       Rejections are recorded as `rejected`.
+
+    3. **Background pre-check** — on seed/ingest, exceptions are queued to an async worker
+       that runs the Intake Agent in isolation and stores a lightweight `precheck_summary`
+       (needs_technical, needs_compliance, action_hint) before full investigation.
+
+    4. **Report Q&A** — analysts can ask follow-up questions on any completed investigation.
+       The chatbot has the full report as context and can call `search_knowledge_base` against
+       the Bedrock Knowledge Base (KB ID `OGQEU4WHIQ`).
+
+    5. **Operations Dashboard** — KPI, volume, savings, exception breakdown, AI stats,
+       and token-cost endpoints drive the React dashboard.
+
+    6. **Monitoring** — in-flight payments, active alerts, and corridor latency heatmap
+       for proactive bottleneck detection.
+
+    ## Authentication
+    No authentication in the hackathon build. Production would add API key or JWT.
+
+    ## SSE keepalive
+    The investigate endpoint emits `: keepalive` comments every 15 s to prevent ALB
+    idle-timeout from killing long-running investigations.
+  version: "1.0.0"
+  contact:
+    name: Aditya Tapshalkar
+    email: aditya.tapshalkar@finastra.com
+
+servers:
+  - url: https://vistahack26.tapshalkar.com
+    description: Production (ECS Fargate, ALB, us-west-2)
+  - url: http://localhost:8000
+    description: Local development (uvicorn --reload)
+
+tags:
+  - name: health
+    description: Health and liveness probes (ALB target group)
+  - name: seed
+    description: Synthetic payment generation and database seeding
+  - name: exceptions
+    description: Payment exception queue, ingestion, and AI investigation
+  - name: resolutions
+    description: Human-in-the-loop approval/rejection and report chatbot
+  - name: metrics
+    description: Operations dashboard — KPIs, charts, AI stats
+  - name: monitoring
+    description: Real-time in-flight payment monitoring and alerts
+
+paths:
+
+  # ── Health ─────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      tags: [health]
+      summary: Health check (ALB target group probe)
+      operationId: health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/ping:
+    get:
+      tags: [health]
+      summary: Ping
+      operationId: ping
+      responses:
+        '200':
+          description: Pong
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: pong
+
+  # ── Seed / generation ──────────────────────────────────────────────────────
+
+  /api/seed:
+    post:
+      tags: [seed]
+      summary: Generate synthetic pacs.008 payments and seed the database
+      description: |
+        Generates a batch of CBPR+ SR2025 pacs.008 XML messages with configurable
+        error injection. Writes to RDS PostgreSQL (payments + exceptions + payment_events)
+        and optionally uploads raw XML to S3.
+
+        Faulty messages are automatically enqueued for AI pre-check (background intake
+        classification) via the async `_precheck_worker`.
+      operationId: seed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeedRequest'
+            example:
+              count: 15
+              error_rate: 0.4
+              stuck_rate: 0.1
+      responses:
+        '200':
+          description: Seed batch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeedResponse'
+
+  /api/demo/generate:
+    post:
+      tags: [seed]
+      summary: Quick demo data generator (frontend Generate button)
+      description: Thin wrapper — generates 15 payments at 40 % fault rate and writes directly to DB.
+      operationId: demoGenerate
+      responses:
+        '200':
+          description: Generation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generated:
+                    type: integer
+                    description: Number of payments written to the database
+
+  # ── Exceptions ─────────────────────────────────────────────────────────────
+
+  /api/exceptions:
+    get:
+      tags: [exceptions]
+      summary: List payment exceptions
+      description: |
+        Returns up to 100 exceptions ordered by settlement date ASC, then created_at DESC.
+        Includes denormalised payment fields and the latest investigation recommendation.
+      operationId: listExceptions
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, resolved]
+          description: |
+            Filter by status group.
+            `active` — excludes `resolved` and `rejected`.
+            `resolved` — returns only `resolved` and `rejected`.
+            Omit to return all exceptions.
+      responses:
+        '200':
+          description: Exception list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExceptionSummary'
+
+  /api/ingest/exceptions:
+    post:
+      tags: [exceptions]
+      summary: Ingest a new exception record (Lambda / internal)
+      description: |
+        Upserts an exception keyed on `msg_id`. Automatically enqueues the exception
+        for background AI pre-check (intake classification only, lightweight).
+      operationId: ingestException
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestExceptionRequest'
+      responses:
+        '200':
+          description: Exception created or updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exception_id:
+                    type: integer
+        '503':
+          description: Database unavailable
+
+  /api/exceptions/{tx_id}/investigate:
+    post:
+      tags: [exceptions]
+      summary: Trigger full AI investigation (streaming SSE)
+      description: |
+        Starts the LangGraph multi-agent pipeline for the given exception and streams
+        agent reasoning steps as Server-Sent Events.
+
+        **Pipeline:** Intake → Investigation → [Technical Diagnosis ‖ Compliance Agent]
+        → Resolution. Specialist agents run in parallel; both results are awaited before
+        Resolution synthesises findings and recommends an action.
+
+        **Status transitions:** `pending` → `investigating` (on start) → `awaiting_approval`
+        (on completion, written atomically with the investigation record).
+
+        **SSE protocol:** each event is `data: <json>\n\n`. The stream closes with a
+        `done` type event. See `InvestigationEvent` schema for all event shapes.
+
+        **Keepalive:** `: keepalive` comments are emitted every 15 s of silence to
+        prevent ALB idle-timeout (default 60 s) from dropping the connection.
+      operationId: investigate
+      parameters:
+        - name: tx_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: |
+            `TX-NNNNN` (zero-padded payment DB id, as shown in the UI) or a raw `msg_id`
+            (pacs.008 `AppHdr/BizMsgIdr`).
+          example: TX-00001
+      responses:
+        '200':
+          description: Server-Sent Events stream of agent reasoning
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/InvestigationEvent'
+        '404':
+          description: Exception not found
+        '422':
+          description: Invalid TX-id format
+        '503':
+          description: Database unavailable
+
+  # ── Resolutions (HITL gate + chat) ─────────────────────────────────────────
+
+  /api/resolutions/{report_id}/approve:
+    post:
+      tags: [resolutions]
+      summary: Approve an investigation recommendation
+      description: |
+        Marks the investigation as `approved`. If the resolution agent produced a
+        `recommended_sql` action, it is executed against the database immediately.
+        Exception status transitions to `resolved`.
+
+        This is the human-in-the-loop gate — no corrective action runs without
+        explicit approval here.
+      operationId: approveResolution
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^RPT-\d{4}$'
+          example: RPT-0042
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+        '404':
+          description: Investigation not found
+        '503':
+          description: Database unavailable
+
+  /api/resolutions/{report_id}/reject:
+    post:
+      tags: [resolutions]
+      summary: Reject an investigation recommendation
+      description: |
+        Marks the investigation as `rejected`. Exception status transitions to `rejected`.
+        No SQL is executed.
+      operationId: rejectResolution
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^RPT-\d{4}$'
+          example: RPT-0042
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: rejected
+                  report_id:
+                    type: string
+                    example: RPT-0042
+        '404':
+          description: Investigation not found
+        '503':
+          description: Database unavailable
+
+  /api/reports/{report_id}/chat:
+    post:
+      tags: [resolutions]
+      summary: Ask a follow-up question about a completed investigation report
+      description: |
+        Stateless conversational endpoint. The LLM receives the full investigation
+        context (steps, findings, recommendation) as a system prompt and may call
+        `search_knowledge_base` against the Bedrock Knowledge Base to retrieve
+        policy documents, compliance rules, SWIFT guidelines, or resolution procedures.
+
+        Up to 3 tool-call / result rounds are executed before the final answer is returned.
+      operationId: chatReport
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^RPT-\d{4}$'
+          example: RPT-0042
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  description: Analyst's follow-up question (natural language)
+                  example: Why did you recommend holding this payment?
+      responses:
+        '200':
+          description: AI answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '404':
+          description: Investigation not found
+        '503':
+          description: Database unavailable
+
+  # ── Metrics (dashboard) ────────────────────────────────────────────────────
+
+  /api/metrics/kpis:
+    get:
+      tags: [metrics]
+      summary: Operations dashboard KPIs
+      description: |
+        Returns four headline numbers for the KPI row:
+        - `in_flight` — total payments in DB
+        - `exceptions_open` — unresolved exceptions
+        - `settlement_risk` — open exceptions settling today or tomorrow
+        - `mttr_before` / `mttr_now` — manual baseline vs live AI MTTR
+      operationId: getKpis
+      responses:
+        '200':
+          description: KPI values
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KpiResponse'
+
+  /api/metrics/volume:
+    get:
+      tags: [metrics]
+      summary: Hourly transaction volume by rail (today, 08:00–17:00)
+      description: |
+        SEPA SCT and Fedwire are static baseline constants (120 and 45 respectively).
+        SWIFT CBPR+ is live from the DB. Exceptions per hour also included.
+      operationId: getVolume
+      responses:
+        '200':
+          description: Hourly volume data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VolumePoint'
+
+  /api/metrics/savings:
+    get:
+      tags: [metrics]
+      summary: Hourly cost-per-case by rail (today, 08:00–17:00)
+      description: |
+        Compares AI investigation cost ($0.29/case average) against the manual baseline
+        ($27.50/case — industry midpoint $15–$40). Only resolved hours show savings.
+        Token pricing: $0.003/1k input, $0.015/1k output (claude-sonnet-4-6, us-west-2).
+      operationId: getSavings
+      responses:
+        '200':
+          description: Hourly savings data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SavingsPoint'
+
+  /api/metrics/exceptions:
+    get:
+      tags: [metrics]
+      summary: Exception breakdown by type with resolution statistics
+      operationId: getExceptionBreakdown
+      responses:
+        '200':
+          description: Per-type counts, approval/rejection counts, average resolution time
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExceptionBreakdown'
+
+  /api/metrics/correspondents:
+    get:
+      tags: [metrics]
+      summary: Correspondent bank health (top 10 by delay count)
+      description: |
+        Computes average PAYMENT_RECEIVED → SETTLEMENT_CONFIRMED latency per receiver BIC.
+        Status is `outage` if ≥ 3 PROCESSING_DELAYED events, `degraded` if ≥ 1, else `normal`.
+      operationId: getCorrespondents
+      responses:
+        '200':
+          description: Correspondent health records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CorrespondentHealth'
+
+  /api/metrics/ai:
+    get:
+      tags: [metrics]
+      summary: AI investigation performance statistics
+      operationId: getAiStats
+      responses:
+        '200':
+          description: Investigation counts, acceptance rate, average duration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiStats'
+
+  /api/metrics/throughput:
+    get:
+      tags: [metrics]
+      summary: Hourly exception detection vs resolution throughput (today)
+      operationId: getThroughput
+      responses:
+        '200':
+          description: Hourly detection/resolution counts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ThroughputPoint'
+
+  /api/metrics/token-costs:
+    get:
+      tags: [metrics]
+      summary: Per-exception-type LLM token usage and USD cost breakdown
+      description: |
+        Computes averages from live `precheck_input_tokens`/`precheck_output_tokens`
+        (on exceptions table) and `input_tokens`/`output_tokens` (on investigations table).
+        Falls back to static estimates when no live data is available.
+      operationId: getTokenCosts
+      responses:
+        '200':
+          description: Token cost breakdown by exception type
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TokenCostBreakdown'
+
+  # ── Monitoring ─────────────────────────────────────────────────────────────
+
+  /api/monitoring/inflight:
+    get:
+      tags: [monitoring]
+      summary: In-flight payments awaiting settlement (up to 50)
+      description: |
+        Payments that have a PAYMENT_RECEIVED event but no SETTLEMENT_CONFIRMED event.
+        Sorted by received_at ASC (oldest first). Enriched with elapsed minutes and risk level.
+
+        Risk levels:
+        - `breached` — PROCESSING_DELAYED event present, or elapsed > 6h
+        - `at-risk` — elapsed > 2h
+        - `on-track` — all others
+      operationId: getInflight
+      responses:
+        '200':
+          description: In-flight payment records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/InflightPayment'
+
+  /api/monitoring/alerts:
+    get:
+      tags: [monitoring]
+      summary: Active exception alerts (open > 30 minutes, up to 20)
+      description: |
+        Exceptions in non-terminal status that were created more than 30 minutes ago.
+        Severity is `high` if age > 120 minutes, else `medium`.
+      operationId: getAlerts
+      responses:
+        '200':
+          description: Active alert records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Alert'
+
+  /api/monitoring/heatmap:
+    get:
+      tags: [monitoring]
+      summary: Corridor latency heatmap (top 30 by avg processing time)
+      description: |
+        Groups settled payments by (currency, receiver_bic) and computes average
+        PAYMENT_RECEIVED → SETTLEMENT_CONFIRMED latency.
+
+        Status thresholds:
+        - `breached` — avg > 360 min
+        - `at-risk` — avg > 120 min
+        - `on-track` — all others
+      operationId: getHeatmap
+      responses:
+        '200':
+          description: Corridor latency records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HeatmapEntry'
+
+# ── Component schemas ────────────────────────────────────────────────────────
+
+components:
+  schemas:
+
+    SeedRequest:
+      type: object
+      properties:
+        count:
+          type: integer
+          default: 10
+          description: Number of pacs.008 messages to generate
+        error_rate:
+          type: number
+          format: float
+          default: 0.3
+          minimum: 0.0
+          maximum: 1.0
+          description: Fraction of messages to inject faults into
+        seed:
+          type: integer
+          nullable: true
+          description: RNG seed for reproducible batches
+        error_codes:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum:
+              - IBAN_INVALID_CHECKSUM
+              - IBAN_WRONG_LENGTH
+              - BIC_IBAN_COUNTRY_MISMATCH
+              - BIC_INVALID_COUNTRY
+              - BENEFICIARY_NAME_INCOMPLETE
+              - ADDRESS_INCOMPLETE
+              - DUPLICATE_UETR
+              - XCHG_RATE_INCONSISTENT
+          description: Specific error codes to inject. Null = random selection from catalog.
+        stuck_rate:
+          type: number
+          format: float
+          default: 0.0
+          minimum: 0.0
+          maximum: 1.0
+          description: Fraction of payments to mark as PROCESSING_DELAYED (stuck in-flight)
+
+    SeedResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: UUID for this generation run
+        count:
+          type: integer
+        faulty:
+          type: integer
+          description: Number of payments with injected errors
+        stuck:
+          type: integer
+          description: Number of payments with PROCESSING_DELAYED events
+        events_written:
+          type: integer
+          description: Total payment_events rows inserted
+        payments_written:
+          type: integer
+        exceptions_written:
+          type: integer
+        s3_prefix:
+          type: string
+          nullable: true
+          description: S3 URI prefix for uploaded XMLs, or null if S3 was skipped (local dev)
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              file:
+                type: string
+              s3_key:
+                type: string
+                nullable: true
+              uetr:
+                type: string
+              is_faulty:
+                type: boolean
+              is_stuck:
+                type: boolean
+              errors:
+                type: array
+                items:
+                  type: object
+
+    ExceptionSummary:
+      type: object
+      properties:
+        tx_id:
+          type: string
+          description: Frontend identifier (`TX-NNNNN`, zero-padded payment DB id)
+          example: TX-00001
+        msg_id:
+          type: string
+          description: pacs.008 BizMsgIdr
+        type:
+          type: string
+          description: Human-readable exception type
+          example: Bad IBAN
+        type_key:
+          type: string
+          description: UI colour-coding key
+          enum: [iban, iso, duplicate, fx, gray]
+        amount:
+          type: string
+          description: Formatted amount with currency symbol (e.g. "€42,000")
+        sender:
+          type: string
+          description: Debtor name or sender BIC as fallback
+        receiver:
+          type: string
+          description: Creditor name or receiver BIC as fallback
+        status:
+          type: string
+          enum: [pending, evaluating, investigating, awaiting_approval, resolved, rejected]
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        settlement_date:
+          type: string
+          format: date
+          nullable: true
+        precheck_summary:
+          $ref: '#/components/schemas/PrecheckSummary'
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        recommendation_action:
+          type: string
+          nullable: true
+        recommendation:
+          type: object
+          nullable: true
+          description: Full recommendation object from the Resolution Agent
+        recommended_sql:
+          type: string
+          nullable: true
+          description: SQL action generated by the Resolution Agent (executed on approval)
+
+    PrecheckSummary:
+      type: object
+      nullable: true
+      description: Lightweight triage result from the background intake pre-check worker
+      properties:
+        needs_technical:
+          type: boolean
+        needs_compliance:
+          type: boolean
+        action_hint:
+          type: string
+          description: One-line action hint from the Intake Agent
+        error_categories:
+          type: array
+          items:
+            type: string
+
+    IngestExceptionRequest:
+      type: object
+      required: [msg_id, uetr, detected_errors]
+      properties:
+        msg_id:
+          type: string
+          description: pacs.008 BizMsgIdr
+        uetr:
+          type: string
+          description: ISO 20022 UETR (UUID v4)
+          example: 5a9f4b3e-12c7-4d8f-9e1a-0b2c3d4e5f6a
+        detected_errors:
+          type: array
+          description: Error codes detected during pacs.008 validation
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                example: IBAN_INVALID_CHECKSUM
+              field:
+                type: string
+              value:
+                type: string
+        payment_id:
+          type: integer
+          nullable: true
+          description: DB id of the associated payment row, if already created
+
+    InvestigationEvent:
+      description: |
+        One of three SSE event shapes emitted during investigation.
+
+        **Agent reasoning** (during pipeline execution):
+        ```
+        data: {"agent": "Technical Diagnosis", "cls": "technical", "text": "The IBAN GB29..."}
+        ```
+
+        **Tool call** (when an agent invokes a tool):
+        ```
+        data: {"agent": "tool", "cls": "tool", "text": "🔧 validate_iban_tool(iban='GB29...')"}
+        ```
+
+        **Tool result** (truncated to 150 chars):
+        ```
+        data: {"agent": "tool", "cls": "tool", "text": "↳ {\"valid\": false, \"error\": \"mod97_fail\"}"}
+        ```
+
+        **Completion** (final event — stream closes immediately after):
+        ```
+        data: {"type": "done", "report_id": "RPT-0042", "recommendation": {"action": "...", "rationale": "..."}}
+        ```
+
+        **Keepalive comment** (every 15 s of silence, not a `data:` line):
+        ```
+        : keepalive
+        ```
+
+        Agent `cls` values map to UI colours:
+        `intake` | `investigation` | `technical` | `compliance` | `resolution` | `tool`
+      type: object
+      properties:
+        agent:
+          type: string
+          example: Technical Diagnosis
+        cls:
+          type: string
+          enum: [intake, investigation, technical, compliance, resolution, tool]
+        text:
+          type: string
+        type:
+          type: string
+          description: Present only on the final `done` event
+          example: done
+        report_id:
+          type: string
+          description: Present only on the final `done` event
+          example: RPT-0042
+        recommendation:
+          type: object
+          description: Present only on the final `done` event
+          properties:
+            action:
+              type: string
+            rationale:
+              type: string
+
+    ApprovalResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: approved
+        report_id:
+          type: string
+          example: RPT-0042
+        sql_execution:
+          type: object
+          nullable: true
+          description: Present only when a `recommended_sql` action was executed
+          properties:
+            executed:
+              type: boolean
+            rows_affected:
+              type: integer
+            message:
+              type: string
+              example: Recommended action executed successfully
+            error:
+              type: string
+              description: Present only when `executed` is false
+
+    ChatResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+          description: AI-generated answer to the analyst's question
+        tool:
+          type: string
+          nullable: true
+          description: Name of tool called during response generation, if any
+          example: search_knowledge_base
+
+    KpiResponse:
+      type: object
+      properties:
+        in_flight:
+          type: integer
+          description: Total payments in DB (proxy for in-flight volume)
+        exceptions_open:
+          type: integer
+          description: Exceptions not in `resolved` or `cancelled` status
+        settlement_risk:
+          type: integer
+          description: Open exceptions with settlement_date ≤ today + 1 day
+        mttr_before:
+          type: string
+          description: Historical manual MTTR baseline (static "38m")
+        mttr_now:
+          type: string
+          description: Live AI-assisted MTTR computed from completed investigations
+          example: "12s"
+
+    VolumePoint:
+      type: object
+      properties:
+        hour:
+          type: string
+          example: "09:00"
+        sepa_sct:
+          type: integer
+          description: Static SEPA SCT baseline (120)
+        fedwire:
+          type: integer
+          description: Static Fedwire baseline (45)
+        swift_cbpr:
+          type: integer
+          description: Live SWIFT CBPR+ count from DB (payments ingested this hour)
+        exceptions:
+          type: integer
+          description: Live exception count created this hour
+
+    SavingsPoint:
+      type: object
+      properties:
+        hour:
+          type: string
+          example: "09:00"
+        saving_per_case:
+          type: number
+          format: float
+          description: |
+            USD saved per resolved case = $27.50 baseline − actual avg LLM token cost for that hour.
+            Zero for hours with no resolved investigations.
+          example: 27.21
+        total_saving:
+          type: number
+          format: float
+          description: saving_per_case × resolved_count for the hour
+          example: 81.63
+        resolved_count:
+          type: integer
+          description: Number of investigations completed in this hour
+        baseline:
+          type: number
+          format: float
+          description: Manual processing cost baseline in USD per case (27.50)
+
+    ExceptionBreakdown:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Display name of exception type
+          example: Bad IBAN (checksum)
+        count:
+          type: integer
+        approved:
+          type: integer
+          description: Count with status `resolved`
+        rejected:
+          type: integer
+          description: Count with status `rejected`
+        avg_resolution_min:
+          type: number
+          format: float
+          description: Average investigation duration in minutes (created_at → completed_at)
+
+    CorrespondentHealth:
+      type: object
+      properties:
+        bic:
+          type: string
+          example: DEUTDEDB
+        bank:
+          type: string
+          description: BIC (stand-in; production would resolve via BIC directory)
+        country:
+          type: string
+          description: ISO 3166 alpha-2 derived from BIC positions 5–6
+          example: DE
+        status:
+          type: string
+          enum: [normal, degraded, outage]
+          description: |
+            `outage` if PROCESSING_DELAYED count ≥ 3, `degraded` if ≥ 1, else `normal`
+        avg_processing_min:
+          type: number
+          format: float
+          description: Average PAYMENT_RECEIVED → SETTLEMENT_CONFIRMED latency in minutes
+        delayed:
+          type: integer
+          description: Count of PROCESSING_DELAYED events for this BIC
+
+    AiStats:
+      type: object
+      properties:
+        total_investigations:
+          type: integer
+        auto_resolved:
+          type: integer
+          description: Investigations with a `completed_at` timestamp (awaiting or actioned)
+        escalated_to_human:
+          type: integer
+          description: Investigations without `completed_at`
+        recommendation_acceptance_rate:
+          type: number
+          format: float
+          description: approved ÷ (approved + rejected), range 0.0–1.0
+        avg_investigation_seconds:
+          type: integer
+          description: Average wall-clock seconds from created_at to completed_at
+
+    ThroughputPoint:
+      type: object
+      properties:
+        hour:
+          type: string
+          example: "10:00"
+        detected:
+          type: integer
+          description: Exceptions created in this hour (today)
+        resolved:
+          type: integer
+          description: Investigations completed in this hour (today)
+
+    TokenCostBreakdown:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Exception type display name
+          example: Sanctions name hit
+        precheck_avg_usd:
+          type: number
+          format: float
+          description: Average USD cost for background intake pre-check
+          example: 0.004
+        investigation_avg_usd:
+          type: number
+          format: float
+          description: Average USD cost for full multi-agent investigation
+          example: 0.88
+        precheck_avg_tokens:
+          type: integer
+          example: 1400
+        investigation_avg_tokens:
+          type: integer
+          example: 55000
+        exception_count:
+          type: integer
+          description: Number of exceptions contributing to this average (only present when is_live=true)
+        is_live:
+          type: boolean
+          description: |
+            True when computed from real DB token counters. False when falling back to
+            static estimates (no pre-checks have run yet or DB unavailable).
+
+    InflightPayment:
+      type: object
+      properties:
+        tx_id:
+          type: string
+          example: TX-00012
+        msg_id:
+          type: string
+        uetr:
+          type: string
+        amount:
+          type: string
+          example: "150000 EUR"
+        sender_bic:
+          type: string
+        receiver_bic:
+          type: string
+        elapsed_min:
+          type: number
+          format: float
+          description: Minutes since PAYMENT_RECEIVED event
+        risk:
+          type: string
+          enum: [on-track, at-risk, breached]
+        is_stuck:
+          type: boolean
+          description: True if a PROCESSING_DELAYED event exists for this payment
+
+    Alert:
+      type: object
+      properties:
+        alert_id:
+          type: string
+          example: ALT-0003
+        msg_id:
+          type: string
+        error_code:
+          type: string
+          example: IBAN_INVALID_CHECKSUM
+        status:
+          type: string
+          enum: [pending, evaluating, investigating, awaiting_approval]
+        age_min:
+          type: integer
+          description: Minutes since exception was created
+        severity:
+          type: string
+          enum: [medium, high]
+          description: '`high` if age_min > 120, else `medium`'
+        amount:
+          type: string
+        receiver_bic:
+          type: string
+
+    HeatmapEntry:
+      type: object
+      properties:
+        corridor:
+          type: string
+          description: Human-readable corridor label
+          example: "EUR → DE"
+        from_currency:
+          type: string
+          example: EUR
+        receiver_bic:
+          type: string
+          example: DEUTDEDB
+        avg_processing_min:
+          type: number
+          format: float
+          description: Average PAYMENT_RECEIVED → SETTLEMENT_CONFIRMED latency in minutes
+        payment_count:
+          type: integer
+        status:
+          type: string
+          enum: [on-track, at-risk, breached]

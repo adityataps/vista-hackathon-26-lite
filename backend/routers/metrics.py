@@ -79,20 +79,20 @@ def get_volume():
 
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT DATE_TRUNC('hour', ingested_at) AS hr, COUNT(*) AS cnt
+            SELECT EXTRACT(HOUR FROM ingested_at)::int AS hr, COUNT(*) AS cnt
             FROM payments
-            WHERE ingested_at >= CURRENT_DATE
+            WHERE ingested_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hr ORDER BY hr
         """)
-        cbpr_by_hour = {r[0].strftime("%H:00"): r[1] for r in cur.fetchall()}
+        cbpr_by_hour = {f"{int(r[0]):02d}:00": r[1] for r in cur.fetchall()}
 
         cur.execute("""
-            SELECT DATE_TRUNC('hour', created_at) AS hr, COUNT(*) AS cnt
+            SELECT EXTRACT(HOUR FROM created_at)::int AS hr, COUNT(*) AS cnt
             FROM exceptions
-            WHERE created_at >= CURRENT_DATE
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hr ORDER BY hr
         """)
-        exc_by_hour = {r[0].strftime("%H:00"): r[1] for r in cur.fetchall()}
+        exc_by_hour = {f"{int(r[0]):02d}:00": r[1] for r in cur.fetchall()}
 
     return [
         {
@@ -114,31 +114,47 @@ def get_savings():
     hours = [f"{h:02d}:00" for h in range(8, 18)]
 
     if not conn:
-        return [{"hour": h, "swift_cbpr": _MANUAL_COST_BASELINE - _LLM_COST_PER_CASE,
-                 "sepa_sct": 27.1, "fedwire": 26.9, "baseline": _MANUAL_COST_BASELINE}
+        return [{"hour": h,
+                 "saving_per_case": round(_MANUAL_COST_BASELINE - _LLM_COST_PER_CASE, 2),
+                 "total_saving": 0,
+                 "resolved_count": 0,
+                 "baseline": _MANUAL_COST_BASELINE}
                 for h in hours]
 
     with conn.cursor() as cur:
+        # Look at last 24 hours so we're timezone-safe — CURRENT_DATE in UTC can
+        # cut off afternoon cases when the server is running in a US timezone.
         cur.execute("""
-            SELECT DATE_TRUNC('hour', completed_at) AS hr, COUNT(*) AS resolved
+            SELECT
+                EXTRACT(HOUR FROM completed_at)::int AS hr,
+                COUNT(*) AS resolved,
+                AVG(
+                    (COALESCE(input_tokens, 0)  * 0.003 +
+                     COALESCE(output_tokens, 0) * 0.015) / 1000.0
+                ) AS avg_token_cost_usd
             FROM investigations
-            WHERE completed_at >= CURRENT_DATE
+            WHERE completed_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hr ORDER BY hr
         """)
-        resolved_by_hour = {r[0].strftime("%H:00"): r[1] for r in cur.fetchall()}
+        rows = cur.fetchall()
 
-    return [
-        {
+    # Key by zero-padded hour string to match the hours list
+    by_hour = {f"{int(r[0]):02d}:00": (r[1], float(r[2] or 0)) for r in rows}
+
+    result = []
+    for h in hours:
+        resolved, avg_token_cost = by_hour.get(h, (0, 0.0))
+        # Fall back to flat estimate when no token data yet recorded for this hour
+        cost_per_case = avg_token_cost if avg_token_cost > 0 else _LLM_COST_PER_CASE
+        saving_per_case = round(_MANUAL_COST_BASELINE - cost_per_case, 2)
+        result.append({
             "hour": h,
-            "swift_cbpr": round(_MANUAL_COST_BASELINE - _LLM_COST_PER_CASE, 2)
-                          if resolved_by_hour.get(h, 0) > 0
-                          else _MANUAL_COST_BASELINE,
-            "sepa_sct": 27.1,
-            "fedwire": 26.9,
+            "saving_per_case": saving_per_case,           # always non-zero — potential saving per case
+            "total_saving": round(saving_per_case * resolved, 2),  # 0 when nothing resolved yet
+            "resolved_count": resolved,
             "baseline": _MANUAL_COST_BASELINE,
-        }
-        for h in hours
-    ]
+        })
+    return result
 
 
 # ── Exception breakdown by type ────────────────────────────────────────────────
@@ -162,14 +178,22 @@ def get_exception_breakdown():
         return []
 
     with conn.cursor() as cur:
+        # One row per exception (no JOIN inflation). Latest investigation via LATERAL.
+        # No date filter intentionally — chart shows all-time breakdown by type.
         cur.execute("""
             SELECT
                 e.detected_errors,
                 e.status,
-                i.completed_at,
-                i.created_at
+                inv.completed_at,
+                inv.created_at
             FROM exceptions e
-            LEFT JOIN investigations i ON i.exception_id = e.id
+            LEFT JOIN LATERAL (
+                SELECT completed_at, created_at
+                FROM investigations
+                WHERE exception_id = e.id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) inv ON true
         """)
         rows = cur.fetchall()
 
@@ -301,18 +325,18 @@ def get_throughput():
 
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT DATE_TRUNC('hour', created_at) AS hr, COUNT(*) AS cnt
-            FROM exceptions WHERE created_at >= CURRENT_DATE
+            SELECT EXTRACT(HOUR FROM created_at)::int AS hr, COUNT(*) AS cnt
+            FROM exceptions WHERE created_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hr ORDER BY hr
         """)
-        detected = {r[0].strftime("%H:00"): r[1] for r in cur.fetchall()}
+        detected = {f"{int(r[0]):02d}:00": r[1] for r in cur.fetchall()}
 
         cur.execute("""
-            SELECT DATE_TRUNC('hour', completed_at) AS hr, COUNT(*) AS cnt
-            FROM investigations WHERE completed_at >= CURRENT_DATE
+            SELECT EXTRACT(HOUR FROM completed_at)::int AS hr, COUNT(*) AS cnt
+            FROM investigations WHERE completed_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hr ORDER BY hr
         """)
-        resolved = {r[0].strftime("%H:00"): r[1] for r in cur.fetchall()}
+        resolved = {f"{int(r[0]):02d}:00": r[1] for r in cur.fetchall()}
 
     return [{"hour": h, "detected": detected.get(h, 0), "resolved": resolved.get(h, 0)}
             for h in hours]
@@ -340,7 +364,7 @@ _STATIC_TOKEN_COSTS = [
 def get_token_costs():
     conn = get_db()
     if not conn:
-        return _STATIC_TOKEN_COSTS
+        return [{"is_live": False, **row} for row in _STATIC_TOKEN_COSTS]
 
     with conn.cursor() as cur:
         cur.execute("""
@@ -349,7 +373,8 @@ def get_token_costs():
                 AVG(e.precheck_input_tokens)             AS pre_in,
                 AVG(e.precheck_output_tokens)            AS pre_out,
                 AVG(i.input_tokens)                      AS inv_in,
-                AVG(i.output_tokens)                     AS inv_out
+                AVG(i.output_tokens)                     AS inv_out,
+                COUNT(*)                                 AS exception_count
             FROM exceptions e
             LEFT JOIN LATERAL (
                 SELECT input_tokens, output_tokens
@@ -363,10 +388,10 @@ def get_token_costs():
         rows = cur.fetchall()
 
     if not rows:
-        return _STATIC_TOKEN_COSTS
+        return [{"is_live": False, **row} for row in _STATIC_TOKEN_COSTS]
 
     result = []
-    for first_code, pre_in, pre_out, inv_in, inv_out in rows:
+    for first_code, pre_in, pre_out, inv_in, inv_out, count in rows:
         display = _CODE_TO_DISPLAY.get(first_code or "", (first_code or "Unknown").replace("_", " ").title())
         pre_in = float(pre_in or 0)
         pre_out = float(pre_out or 0)
@@ -378,6 +403,8 @@ def get_token_costs():
             "investigation_avg_usd": round((inv_in * _INPUT_PRICE_PER_1K + inv_out * _OUTPUT_PRICE_PER_1K) / 1000, 4),
             "precheck_avg_tokens": round(pre_in + pre_out),
             "investigation_avg_tokens": round(inv_in + inv_out),
+            "exception_count": count,
+            "is_live": True,
         })
     return result
 

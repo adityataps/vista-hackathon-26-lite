@@ -84,35 +84,39 @@ export default function OperationsDashboard() {
         </div>
 
         <div className="card">
-          <h3>Cost Savings per Pre-Check Case (USD · hourly, by rail)</h3>
+          <h3>Cost Savings vs Manual Baseline (USD · today)</h3>
           <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={savings}>
+            <BarChart data={savings}>
               <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
               <XAxis dataKey="hour" stroke="#8fa1c0" fontSize={11} />
               <YAxis
                 stroke="#8fa1c0"
                 fontSize={11}
-                domain={[24, 29]}
                 tickFormatter={(v) => `$${v}`}
               />
-              <Tooltip contentStyle={tooltipStyle} formatter={(v) => `$${Number(v).toFixed(2)}`} />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(v, name) => {
+                  if (name === 'Resolved cases') return [v, name];
+                  return [`$${Number(v).toFixed(2)}`, name];
+                }}
+              />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              {/* baseline = constant manual cost; swift_cbpr = dynamic (baseline − token cost); others mocked */}
-              <Line isAnimationActive={false} type="monotone" dataKey="baseline" name="Manual investigation baseline" stroke="#8fa1c0" strokeDasharray="6 4" strokeWidth={1.5} dot={false} />
-              <Line isAnimationActive={false} type="monotone" dataKey="swift_cbpr" name="SWIFT CBPR+" stroke="#4f8ef7" strokeWidth={2.5} dot={{ r: 3 }} />
-              <Line isAnimationActive={false} type="monotone" dataKey="sepa_sct" name="SEPA SCT (mock)" stroke="#34d399" strokeWidth={1.5} strokeDasharray="2 3" dot={false} />
-              <Line isAnimationActive={false} type="monotone" dataKey="fedwire" name="Fedwire (mock)" stroke="#2dd4bf" strokeWidth={1.5} strokeDasharray="2 3" dot={false} />
-            </LineChart>
+              {/* saving_per_case is always non-zero — shows the per-case saving regardless of volume */}
+              <Bar dataKey="saving_per_case" name="Saving per case" fill="#4f8ef7" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="total_saving"    name="Total hourly saving" fill="#34d399" radius={[3, 3, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
           <div className="footnote">
-            Baseline: manual investigation costs $15–$40 per case (industry average) — midpoint $27.50 used.
-            Savings per case = baseline − LLM token cost of the AI investigation. SWIFT CBPR+ computed per
-            resolved case; SEPA SCT &amp; Fedwire are mock datasets.
+            Saving per case = $27.50 manual baseline − actual avg LLM token cost (claude-sonnet-4-6 at
+            $0.003/1k input · $0.015/1k output). Total hourly saving = saving per case × resolved count.
+            Per-case saving shown for all hours as the potential saving; total saving only accrues when
+            investigations complete.
           </div>
         </div>
 
         <div className="card">
-          <h3>Exception Breakdown (today)</h3>
+          <h3>Exception Breakdown (all-time)</h3>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={breakdown} layout="vertical" margin={{ left: 30 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
@@ -133,7 +137,14 @@ export default function OperationsDashboard() {
         </div>
 
         <div className="card">
-          <h3>AI Cost per Exception Type (USD)</h3>
+          <h3>
+            AI Cost per Exception Type (USD)
+            {tokenCosts.length > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 8, color: tokenCosts[0].is_live ? '#34d399' : '#8fa1c0' }}>
+                {tokenCosts[0].is_live ? '● live' : '○ estimated'}
+              </span>
+            )}
+          </h3>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={tokenCosts} layout="vertical" margin={{ left: 160 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
