@@ -159,7 +159,14 @@ export default function ExceptionQueue() {
   }
 
   function fetchQueue() {
-    getExceptions('active').then(({ data }) => {
+    getExceptions('active').then(({ data, source }) => {
+      if (source === 'mock') {
+        // On transient DB failures, keep showing the last real data rather than
+        // replacing it with the static mock fallback.
+        setQueue(prev => prev.length > 0 ? prev : data);
+        return;
+      }
+
       const newIds = data.map(r => r.tx_id).filter(id => !knownIdsRef.current.has(id));
       data.forEach(r => knownIdsRef.current.add(r.tx_id));
       if (newIds.length > 0) {
