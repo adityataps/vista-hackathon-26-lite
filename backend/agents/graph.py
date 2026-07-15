@@ -15,12 +15,20 @@ from agents.nodes.resolution import resolution_node
 def build_graph(llm: ChatBedrock):
     builder = StateGraph(InvestigationState)
 
-    # Bind llm into each node via closure
-    builder.add_node("intake", lambda s: intake_node(s, llm))
-    builder.add_node("investigate", lambda s: investigate_node(s, llm))
-    builder.add_node("technical", lambda s: technical_node(s, llm))
-    builder.add_node("compliance", lambda s: compliance_node(s, llm))
-    builder.add_node("resolution", lambda s: resolution_node(s, llm))
+    # Bind llm into each node via async closures so LangGraph detects them as
+    # coroutine functions and awaits them — sync lambdas cause run_in_executor to
+    # return the coroutine unawaited, breaking the state-write step.
+    async def _intake(s): return await intake_node(s, llm)
+    async def _investigate(s): return await investigate_node(s, llm)
+    async def _technical(s): return await technical_node(s, llm)
+    async def _compliance(s): return await compliance_node(s, llm)
+    async def _resolution(s): return await resolution_node(s, llm)
+
+    builder.add_node("intake", _intake)
+    builder.add_node("investigate", _investigate)
+    builder.add_node("technical", _technical)
+    builder.add_node("compliance", _compliance)
+    builder.add_node("resolution", _resolution)
 
     builder.add_edge(START, "intake")
     builder.add_edge("intake", "investigate")
