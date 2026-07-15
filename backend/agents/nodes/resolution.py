@@ -110,7 +110,10 @@ async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
 
     try:
         response = await llm.ainvoke([SystemMessage(content=SYSTEM), HumanMessage(content=prompt)])
-        raw = response.content.strip()
+        content = response.content
+        if isinstance(content, list):
+            content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+        raw = content.strip()
 
         if "```" in raw:
             raw = raw.split("```")[1]
