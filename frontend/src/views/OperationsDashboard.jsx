@@ -161,35 +161,21 @@ export default function OperationsDashboard() {
         )}
 
         <div className="card">
-          <h3>AI Cost &amp; Throughput</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div>
-              <div className="footnote" style={{ margin: '0 0 6px' }}>Avg token cost per exception type (USD)</div>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={tokenCosts} layout="vertical" margin={{ left: 0, right: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
-                  <XAxis type="number" stroke="#8fa1c0" fontSize={10} tickFormatter={(v) => `$${v}`} />
-                  <YAxis type="category" dataKey="type" stroke="#8fa1c0" fontSize={10.5} width={140} />
-                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => `$${Number(v).toFixed(2)}`} cursor={{ fill: 'rgba(79,142,247,0.06)' }} />
-                  <Bar dataKey="avg_token_cost_usd" name="Avg token cost" fill="#7c5cf0" radius={[0, 3, 3, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div>
-              <div className="footnote" style={{ margin: '0 0 6px' }}>Exceptions detected vs. resolved per hour</div>
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={throughput}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
-                  <XAxis dataKey="hour" stroke="#8fa1c0" fontSize={10} />
-                  <YAxis stroke="#8fa1c0" fontSize={10} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="detected" name="Detected" stroke="#f87171" strokeWidth={2} dot={{ r: 2.5 }} />
-                  <Line type="monotone" dataKey="resolved" name="Resolved (HITL)" stroke="#34d399" strokeWidth={2} dot={{ r: 2.5 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
+          <h3>AI Cost per Exception Type (USD)</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={tokenCosts} layout="vertical" margin={{ left: 160 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#22304d" />
+              <XAxis type="number" stroke="#8fa1c0" fontSize={11} tickFormatter={(v) => `$${v.toFixed(3)}`} />
+              <YAxis type="category" dataKey="type" stroke="#8fa1c0" fontSize={11} width={160} />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(value, name) => [`$${value.toFixed(4)}`, name]}
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="precheck_avg_usd"      name="Pre-check"         fill="#3d5578" radius={[0,3,3,0]} />
+              <Bar dataKey="investigation_avg_usd" name="Full investigation" fill="#4f8ef7" radius={[0,3,3,0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
     </>

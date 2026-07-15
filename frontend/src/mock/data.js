@@ -95,16 +95,15 @@ export const correspondents = [
 // Avg LLM token cost per exception type (USD per agent investigation).
 //
 // DATA CONTRACT (for backend engineer): GET /api/metrics/token-costs
-//   avg_token_cost_usd → average LLM token spend per investigation of this type
+//   precheck_avg_usd      → average LLM token spend for pre-check phase
+//   investigation_avg_usd → average LLM token spend for full investigation
 export const tokenCostPerType = [
-  { type: 'Bad IBAN (checksum)', avg_token_cost_usd: 0.09 },
-  { type: 'Invalid BIC', avg_token_cost_usd: 0.07 },
-  { type: 'Duplicate UETR', avg_token_cost_usd: 0.11 },
-  { type: 'Sanctions name hit', avg_token_cost_usd: 0.88 },
-  { type: 'Missing mandatory field', avg_token_cost_usd: 0.14 },
-  { type: 'Invalid currency/amount', avg_token_cost_usd: 0.12 },
-  { type: 'FX limit breach', avg_token_cost_usd: 0.31 },
-  { type: 'Cut-off / value date', avg_token_cost_usd: 0.18 },
+  { type: 'Bad IBAN (checksum)',     precheck_avg_usd: 0.004, investigation_avg_usd: 0.09 },
+  { type: 'Invalid BIC',             precheck_avg_usd: 0.003, investigation_avg_usd: 0.07 },
+  { type: 'Duplicate UETR',          precheck_avg_usd: 0.004, investigation_avg_usd: 0.11 },
+  { type: 'Sanctions name hit',      precheck_avg_usd: 0.004, investigation_avg_usd: 0.88 },
+  { type: 'Missing mandatory field', precheck_avg_usd: 0.003, investigation_avg_usd: 0.14 },
+  { type: 'FX limit breach',         precheck_avg_usd: 0.004, investigation_avg_usd: 0.31 },
 ];
 
 // Exceptions detected vs. resolved per hour.
