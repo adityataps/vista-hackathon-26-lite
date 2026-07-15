@@ -140,6 +140,13 @@ resource "opensearch_index" "kb_default" {
     }
   })
   force_destroy = true
+
+  # Bedrock adds its own metadata fields to the mapping after ingestion.
+  # Ignoring drift here prevents TF from replacing the index (and wiping vectors) on every apply.
+  lifecycle {
+    ignore_changes = [mappings]
+  }
+
   depends_on = [
     aws_opensearchserverless_collection.kb,
     aws_opensearchserverless_access_policy.kb,
