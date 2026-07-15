@@ -257,12 +257,22 @@ async def investigate(tx_id: str):
     async def event_stream():
         accumulated_steps = []
         final_state = {}
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         async for event in graph.astream_events(initial_state, version="v2"):
             sse = _normalize_lg_event(event)
             if sse:
                 accumulated_steps.append({**sse, "ts": datetime.now(timezone.utc).isoformat()})
                 yield f"data: {json.dumps(sse)}\n\n"
+
+            if event.get("event") == "on_chat_model_end":
+                output = event.get("data", {}).get("output")
+                if output is not None:
+                    meta = getattr(output, "usage_metadata", None)
+                    if isinstance(meta, dict):
+                        total_input_tokens += meta.get("input_tokens", 0)
+                        total_output_tokens += meta.get("output_tokens", 0)
 
             if event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
                 final_state = event.get("data", {}).get("output", {})
@@ -272,7 +282,8 @@ async def investigate(tx_id: str):
             cur.execute("""
                 UPDATE investigations
                 SET steps=%s, findings=%s, recommendation=%s,
-                    approval_status='pending', completed_at=NOW()
+                    approval_status='pending', completed_at=NOW(),
+                    input_tokens=%s, output_tokens=%s
                 WHERE id=%s
             """, (
                 json.dumps(accumulated_steps),
@@ -281,6 +292,8 @@ async def investigate(tx_id: str):
                     "compliance": final_state.get("compliance_findings"),
                 }),
                 json.dumps(recommendation),
+                total_input_tokens,
+                total_output_tokens,
                 inv_id,
             ))
             cur.execute("UPDATE exceptions SET status='awaiting_approval' WHERE id=%s", (exc_id,))
