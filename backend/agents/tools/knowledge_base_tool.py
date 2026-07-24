@@ -2,6 +2,7 @@ import json
 
 from langchain_core.tools import tool
 
+from bedrock_guard import BedrockDailyLimitExceeded
 from kb import search_chunks
 
 
@@ -15,5 +16,7 @@ def search_knowledge_base(query: str) -> str:
 
     try:
         return json.dumps({"results": search_chunks(query)})
+    except BedrockDailyLimitExceeded:
+        raise
     except Exception as exc:
         return json.dumps({"error": str(exc), "results": []})

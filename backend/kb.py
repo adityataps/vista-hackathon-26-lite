@@ -6,6 +6,7 @@ from typing import Any
 
 import boto3
 
+from bedrock_guard import BedrockDailyLimitExceeded, check_and_increment_bedrock_usage
 from db import get_db
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ def chunk_markdown(text: str, max_chars: int = 1400) -> list[str]:
 
 
 def _embed_text(text: str) -> list[float]:
+    check_and_increment_bedrock_usage()
     response = _bedrock().invoke_model(
         modelId=_EMBEDDING_MODEL_ID,
         contentType="application/json",
@@ -148,6 +150,8 @@ def seed_knowledge_base(conn=None) -> dict[str, int | list[str] | str]:
                     )
             conn.commit()
             seeded_docs += 1
+        except BedrockDailyLimitExceeded:
+            raise
         except Exception as exc:
             conn.rollback()
             logger.warning("KB seed failed for %s: %s", doc_name, exc)

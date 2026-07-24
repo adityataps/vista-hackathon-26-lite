@@ -18,6 +18,8 @@ from typing import Any
 
 import boto3
 
+from bedrock_guard import check_and_increment_bedrock_usage
+
 logger = logging.getLogger(__name__)
 
 _client: Any = None
@@ -71,6 +73,7 @@ def converse(
     if tools:
         kwargs["toolConfig"] = {"tools": tools}
 
+    check_and_increment_bedrock_usage()
     response = _bedrock().converse(**kwargs)
 
     stop_reason: str = response.get("stopReason", "")

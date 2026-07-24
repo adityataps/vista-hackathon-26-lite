@@ -3,6 +3,7 @@ import os
 from langchain_aws import ChatBedrockConverse as ChatBedrock
 from langgraph.graph import END, START, StateGraph
 
+from bedrock_guard import wrap_bedrock_llm
 from agents.nodes.compliance import compliance_node
 from agents.nodes.dispatch import dispatch_node
 from agents.nodes.intake import intake_node
@@ -42,10 +43,12 @@ def build_graph(llm: ChatBedrock):
 
 
 def make_llm() -> ChatBedrock:
-    return ChatBedrock(
-        model_id=os.environ.get(
-            "BEDROCK_MODEL_ID",
-            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        ),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+    return wrap_bedrock_llm(
+        ChatBedrock(
+            model_id=os.environ.get(
+                "BEDROCK_MODEL_ID",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            ),
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
     )

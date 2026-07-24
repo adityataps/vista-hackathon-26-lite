@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from langchain_aws import ChatBedrockConverse as ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from bedrock_guard import BedrockDailyLimitExceeded
 from agents.state import InvestigationState
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ Generate the investigation report JSON object now."""
             if raw.startswith("json"):
                 raw = raw[4:]
         report_content = json.loads(raw)
+    except BedrockDailyLimitExceeded:
+        raise
     except Exception as exc:
         logger.warning("Report agent LLM call failed: %s", exc)
         report_content = {

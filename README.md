@@ -115,6 +115,10 @@ Four pre-scripted scenarios the live demo must nail:
 | DNS / TLS | Backend uses the AWS-managed Function URL; frontend uses the S3 website endpoint |
 | IaC | Terraform (`infra/`) |
 
+Two Bedrock cost controls are layered on top:
+- app-level soft cap via `BEDROCK_DAILY_LIMIT` (shared across chat + embedding calls)
+- AWS Budget + automatic IAM deny backstop for monthly Bedrock spend
+
 ---
 
 ## Infrastructure
@@ -279,6 +283,10 @@ terraform fmt
 terraform validate
 terraform plan
 ```
+
+Before first apply, set:
+- `budget_alert_email` in `infra/terraform.tfvars`
+- optionally `bedrock_daily_limit` if you want something other than the default `100`
 
 Required GitHub secret: `AWS_ACCOUNT_ID`
 
