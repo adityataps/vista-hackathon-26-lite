@@ -17,6 +17,7 @@ resource "aws_lambda_function" "backend" {
       GUARDRAIL_VERSION      = aws_bedrock_guardrail_version.pay_investigator.version
       BEDROCK_MODEL_ID       = local.haiku_model_id
       BEDROCK_EMBED_MODEL_ID = local.titan_embed_model
+      BEDROCK_DAILY_LIMIT    = tostring(var.bedrock_daily_limit)
       DB_CLUSTER_ARN         = aws_rds_cluster.main.arn
       DB_SECRET_ARN          = aws_secretsmanager_secret.db_credentials.arn
       DB_NAME                = local.db_name

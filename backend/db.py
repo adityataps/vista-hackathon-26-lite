@@ -389,4 +389,11 @@ def _ensure_schema(conn):
         "ON kb_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 8)"
     )
 
+    _run("""
+        CREATE TABLE IF NOT EXISTS bedrock_usage (
+            usage_date DATE PRIMARY KEY,
+            call_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
     conn.autocommit = old_autocommit

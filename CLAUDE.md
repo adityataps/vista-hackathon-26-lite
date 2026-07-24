@@ -21,6 +21,8 @@ The core value prop: replace 15–45 minutes of manual analyst work (clicking th
 | Frontend | React + Recharts built by Vite and hosted as static assets on S3 website hosting |
 | Infra | Terraform (AWS) |
 
+**Cost controls**: the backend enforces a shared Bedrock soft cap via `BEDROCK_DAILY_LIMIT` (chat + embeddings), and Terraform provisions an AWS Budget Action that can auto-attach a deny policy to the backend Lambda role once monthly Bedrock spend hits the configured threshold.
+
 ## Agent Architecture
 
 ```
@@ -192,7 +194,7 @@ terraform plan
 # - public S3 static website bucket for the frontend
 ```
 
-`terraform.tfvars` should include `aws_profile = "AdministratorAccess-446643829639"`.
+`terraform.tfvars` should include `aws_profile = "AdministratorAccess-446643829639"` and `budget_alert_email = ...`. `bedrock_daily_limit` is optional if you want to override the default of `100`.
 
 ## Key Constraints
 

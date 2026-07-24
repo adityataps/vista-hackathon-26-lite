@@ -1,6 +1,13 @@
 # Copy this to terraform.tfvars and fill in — do NOT commit terraform.tfvars
 aws_profile = "AdministratorAccess-446643829639"
 
+# Required before first apply: set budget_alert_email in your local
+# terraform.tfvars so AWS Budgets can email Bedrock spend alerts and
+# budget-action notices.
+
+# Optional: set bedrock_daily_limit in your local terraform.tfvars to override
+# the default soft cap for backend Bedrock invocations (chat + embeddings).
+
 # Optional: where the payment-ingest Lambda POSTs {payment_id, error_msg} when
 # a payment error is detected. Leave unset/blank to disable notifications.
 # error_notify_endpoint_url = "https://example.com/payments/errors"

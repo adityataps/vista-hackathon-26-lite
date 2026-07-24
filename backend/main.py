@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from bedrock_guard import BEDROCK_LIMIT_MESSAGE, BedrockDailyLimitExceeded
 from db import get_db, _ensure_schema
 from pacs008_generator.generator import generate_batch
 from routers.exceptions import router as exceptions_router
@@ -317,6 +318,26 @@ async def _run_precheck(tx_id: str) -> None:
         logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
         _enqueue_auto_investigate(tx_id)
 
+    except BedrockDailyLimitExceeded as exc:
+        precheck_summary = {
+            "needs_technical": False,
+            "needs_compliance": False,
+            "action_hint": BEDROCK_LIMIT_MESSAGE,
+            "error_categories": ["bedrock_limit"],
+            "call_count": exc.call_count,
+        }
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE exceptions
+                SET status='limit_reached',
+                    precheck_summary=%s,
+                    precheck_input_tokens=0,
+                    precheck_output_tokens=0,
+                    updated_at=NOW()
+                WHERE id=%s
+            """, (precheck_summary, exc_id))
+        conn.commit()
+        logger.warning("Pre-check halted by Bedrock daily limit for %s", tx_id)
     except Exception:
         with conn.cursor() as cur:
             cur.execute(
@@ -533,6 +554,41 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
         conn.commit()
         logger.info("Auto-investigation complete: %s (inv=%d)", tx_id, inv_id)
 
+    except BedrockDailyLimitExceeded as exc:
+        _inc_flush()
+        limit_step = {
+            "agent": "System",
+            "cls": "resolution",
+            "text": BEDROCK_LIMIT_MESSAGE,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        accumulated_steps.append(limit_step)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO investigation_steps (inv_id, seq, agent, cls, step_text) VALUES (%s,%s,%s,%s,%s)",
+                (inv_id, _inc_seq, limit_step["agent"], limit_step["cls"], limit_step["text"]),
+            )
+            cur.execute("""
+                UPDATE investigations
+                SET steps=%s, approval_status='limit_reached',
+                    input_tokens=%s, output_tokens=%s
+                WHERE id=%s
+            """, (accumulated_steps, total_input_tokens, total_output_tokens, inv_id))
+            cur.execute("""
+                UPDATE exceptions
+                SET status='limit_reached',
+                    recommendation=%s,
+                    recommended_sql=NULL,
+                    updated_at=NOW()
+                WHERE id=%s
+            """, ({
+                "action": "Pause AI investigation until the daily limit resets.",
+                "rationale": BEDROCK_LIMIT_MESSAGE,
+                "confidence": 1.0,
+                "requires_human_approval": True,
+            }, exc_id))
+        conn.commit()
+        logger.warning("Auto-investigation halted by Bedrock daily limit for %s", tx_id)
     except Exception as exc:
         try:
             conn.rollback()  # clear any aborted transaction before attempting status reset

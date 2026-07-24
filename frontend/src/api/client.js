@@ -10,6 +10,13 @@ import * as mock from '../mock/data.js';
 const API_TIMEOUT_MS = 2500;
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 
+class ApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export function apiUrl(path) {
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
 }
@@ -19,7 +26,16 @@ async function apiFetch(path, options = {}) {
   const t = setTimeout(() => controller.abort(), options.timeout ?? API_TIMEOUT_MS);
   try {
     const res = await fetch(apiUrl(path), { ...options, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`;
+      try {
+        const payload = await res.json();
+        message = payload.detail || payload.message || message;
+      } catch {
+        // ignore parse failure
+      }
+      throw new ApiError(res.status, message);
+    }
     return res;
   } finally {
     clearTimeout(t);
@@ -71,6 +87,7 @@ export function streamInvestigation(txId, onEvent, onDone) {
           if (!line.startsWith('data:')) continue;
           const evt = JSON.parse(line.slice(5));
           if (evt.type === 'done') final = evt;
+          else if (evt.type === 'limit_reached') final = evt;
           else onEvent(evt);
         }
       }
@@ -120,6 +137,7 @@ export function streamLiveInvestigation(txId, onEvent, onDone) {
           if (!line.startsWith('data:')) continue;
           const evt = JSON.parse(line.slice(5));
           if (evt.type === 'done') final = evt;
+          else if (evt.type === 'limit_reached') final = evt;
           else onEvent(evt);
         }
       }
@@ -151,7 +169,10 @@ export async function sendChat(reportId, txId, message) {
     });
     const data = await res.json();
     return { answer: data.answer, tool: data.tool ?? null, source: 'api' };
-  } catch {
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 429) {
+      return { answer: err.message, tool: null, source: 'api', limitReached: true };
+    }
     const bank = mock.chatAnswers[txId] ?? [];
     const hit = bank.find((c) => c.match.test(message)) ?? mock.chatAnswers.default[0];
     await new Promise((r) => setTimeout(r, 700));
