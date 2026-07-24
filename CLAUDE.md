@@ -12,13 +12,13 @@ The core value prop: replace 15–45 minutes of manual analyst work (clicking th
 
 | Layer | Choice |
 |---|---|
-| AI / LLM | Claude `claude-sonnet-4-6` via AWS Bedrock |
+| AI / LLM | Claude Haiku 4.5 via AWS Bedrock (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) |
 | Agent framework | LangGraph (Python) — graph-based multi-agent orchestration |
 | Responsible AI | Amazon Bedrock Guardrails — topic denial, PII redaction, content filtering |
-| Knowledge Base | Amazon Bedrock KB + OpenSearch Serverless VECTORSEARCH (AOSS) — `OGQEU4WHIQ` |
-| Backend | FastAPI (Python) |
-| Data store | RDS PostgreSQL (psycopg2); `seed_db.py` seeds from S3 pacs.008 manifest on container startup |
-| Frontend | React + Recharts |
+| Knowledge Base | pgvector in Aurora PostgreSQL + Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`) |
+| Backend | FastAPI (Python) packaged for AWS Lambda via Lambda Web Adapter + Function URL |
+| Data store | Aurora Serverless v2 PostgreSQL (psycopg2 + pgvector); `seed_db.py` seeds KB embeddings from `infra/assets/*.md` |
+| Frontend | React + Recharts built by Vite and hosted as static assets on S3 website hosting |
 | Infra | Terraform (AWS) |
 
 ## Agent Architecture
@@ -74,7 +74,7 @@ backend/
       compliance.py                    Compliance Agent — sanctions screening, address completeness
       resolution.py                    Resolution Agent — synthesises findings, recommends action + SQL
     tools/
-      knowledge_base_tool.py           search_knowledge_base(query) — Bedrock KB retrieve(), KB ID OGQEU4WHIQ
+      knowledge_base_tool.py           search_knowledge_base(query) — Titan embed + pgvector cosine search
       payment_tools.py                 get_payment_record, get_payment_events, get_resolution_history
       technical_tools.py               validate_iban_tool, validate_bic_tool, check_duplicate_tool, check_fx_tool
       compliance_tools.py              screen_entity_tool (fuzzy SDN match), check_address_completeness_tool
@@ -107,10 +107,11 @@ frontend/                              React + Recharts
                                        Agent SSE stream panel, HITL approve/reject, Report chatbot
 
 infra/                                 Terraform (us-west-2)
-  main.tf                              AWS + OpenSearch + Cloudflare providers
+  main.tf                              AWS provider + default VPC/subnet data sources
   bedrock.tf                           Bedrock Guardrail (topic denial, PII, content filters)
-  bedrock_kb.tf                        Bedrock Knowledge Base + AOSS collection + opensearch_index
-  s3.tf                                mockdata bucket + knowledge_base bucket
+  lambda.tf                            Backend Lambda + Function URL, payment-ingest Lambda, event source mapping
+  rds.tf                               Aurora Serverless v2 PostgreSQL + pgvector-ready connection string
+  s3.tf                                mockdata bucket + KB source-doc bucket + public static frontend website bucket
   assets/                              KB reference docs (uploaded to KB S3 bucket)
     error-code-catalog.md
     iban-format-registry.md
@@ -118,7 +119,7 @@ infra/                                 Terraform (us-west-2)
     duplicate-payment-resolution.md
     swift-pacs008-field-guide.md
     payment-sla-and-escalation.md
-  ecs.tf / rds.tf / alb.tf / iam.tf / ...
+  iam.tf / security_groups.tf / network.tf / outputs.tf / ...
 
 jobs/
   pacs008-generator/                   pacs.008 CBPR+ SR2025 XML generator with error injection + IBAN validator
@@ -181,17 +182,17 @@ npm run build     # production build
 ```bash
 cd infra
 terraform init
+terraform fmt
+terraform validate
 terraform plan
 
-# Standard apply (no KB changes):
-terraform apply
-
-# When changes touch bedrock_kb.tf or opensearch_index — the opensearch provider
-# doesn't inherit the AWS SSO session, so export credentials first:
-eval "$(aws configure export-credentials --profile AdministratorAccess-446643829639 --format env)" && terraform apply -auto-approve
+# First apply provisions:
+# - Aurora Serverless v2 (private, scale-to-zero where provider/API allows)
+# - backend Lambda Function URL (response streaming enabled)
+# - public S3 static website bucket for the frontend
 ```
 
-`terraform.tfvars` must include `aws_profile = "AdministratorAccess-446643829639"`.
+`terraform.tfvars` should include `aws_profile = "AdministratorAccess-446643829639"`.
 
 ## Key Constraints
 
@@ -221,17 +222,17 @@ No real external APIs — all data is synthetic.
 - `check_address_completeness_tool(address_json)` → FATF Travel Rule field check (Ctry required, TwnNm/StrtNm recommended)
 
 **Knowledge base** (`agents/tools/knowledge_base_tool.py`):
-- `search_knowledge_base(query)` → Bedrock KB `retrieve()`, top-5 results with content + score + S3 source URI
+- `search_knowledge_base(query)` → Titan embedding + pgvector cosine search over `kb_chunks`, top-5 results with content + score + doc name
 
 ## Key Live Resource IDs (us-west-2)
 
 | Resource | ID |
 |---|---|
-| Bedrock Knowledge Base | `OGQEU4WHIQ` |
+| Backend model profile | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| Embedding model | `amazon.titan-embed-text-v2:0` |
 | KB S3 bucket | `payinvestigator-kb-446643829639` |
 | Bedrock Guardrail | `elu2okf0di0w` |
 | Guardrail ARN | `arn:aws:bedrock:us-west-2:446643829639:guardrail/elu2okf0di0w` |
-| AOSS Collection | `0y4c0p3nto6tzm5zrmof` |
 
 ## Judging Criteria
 
