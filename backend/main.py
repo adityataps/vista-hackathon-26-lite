@@ -109,7 +109,7 @@ def _seed_write_db(conn, messages: list, s3_prefix: str):
                     ON CONFLICT (msg_id) DO UPDATE SET
                         detected_errors = EXCLUDED.detected_errors,
                         updated_at = NOW()
-                """, (msg["msg_id"], msg["uetr"], json.dumps(detected), payment_id))
+                """, (msg["msg_id"], msg["uetr"], detected, payment_id))
         conn.commit()
         if msg["is_faulty"]:
             _enqueue_precheck(msg["msg_id"])
@@ -308,7 +308,7 @@ async def _run_precheck(tx_id: str) -> None:
                     updated_at=NOW()
                 WHERE id=%s
             """, (
-                json.dumps(precheck_summary),
+                precheck_summary,
                 usage.get("input_tokens", 0),
                 usage.get("output_tokens", 0),
                 exc_id,
@@ -516,20 +516,20 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
                     input_tokens=%s, output_tokens=%s, report_content=%s
                 WHERE id=%s
             """, (
-                json.dumps(accumulated_steps),
-                json.dumps({
+                accumulated_steps,
+                {
                     "technical": final_state.get("technical_findings"),
                     "compliance": final_state.get("compliance_findings"),
-                }),
-                json.dumps(recommendation),
+                },
+                recommendation,
                 total_input_tokens, total_output_tokens,
-                json.dumps(report_content) if report_content else None,
+                report_content if report_content else None,
                 inv_id,
             ))
             cur.execute("""
                 UPDATE exceptions SET status='awaiting_approval', recommendation=%s,
                     recommended_sql=%s WHERE id=%s
-            """, (json.dumps(recommendation), recommendation.get("sql"), exc_id))
+            """, (recommendation, recommendation.get("sql"), exc_id))
         conn.commit()
         logger.info("Auto-investigation complete: %s (inv=%d)", tx_id, inv_id)
 

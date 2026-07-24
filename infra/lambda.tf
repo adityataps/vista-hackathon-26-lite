@@ -7,11 +7,6 @@ resource "aws_lambda_function" "backend" {
   memory_size   = 2048
   architectures = ["x86_64"]
 
-  vpc_config {
-    subnet_ids         = data.aws_subnets.default.ids
-    security_group_ids = [aws_security_group.lambda_backend.id]
-  }
-
   environment {
     variables = {
       AWS_DEFAULT_REGION     = var.region
@@ -22,7 +17,9 @@ resource "aws_lambda_function" "backend" {
       GUARDRAIL_VERSION      = aws_bedrock_guardrail_version.pay_investigator.version
       BEDROCK_MODEL_ID       = local.haiku_model_id
       BEDROCK_EMBED_MODEL_ID = local.titan_embed_model
-      DATABASE_URL           = aws_ssm_parameter.db_url.value
+      DB_CLUSTER_ARN         = aws_rds_cluster.main.arn
+      DB_SECRET_ARN          = aws_secretsmanager_secret.db_credentials.arn
+      DB_NAME                = local.db_name
       LANGCHAIN_TRACING_V2   = var.langsmith_api_key != "" ? "true" : "false"
       LANGCHAIN_PROJECT      = var.langsmith_project
       LANGCHAIN_API_KEY      = var.langsmith_api_key
@@ -32,9 +29,7 @@ resource "aws_lambda_function" "backend" {
   depends_on = [
     aws_cloudwatch_log_group.backend,
     aws_iam_role_policy_attachment.lambda_backend_basic,
-    aws_iam_role_policy_attachment.lambda_backend_vpc,
-    aws_vpc_endpoint.bedrock_runtime,
-    aws_vpc_endpoint.s3,
+    aws_secretsmanager_secret_version.db_credentials,
   ]
 
   lifecycle {
@@ -61,14 +56,11 @@ resource "aws_lambda_function" "payment_ingest" {
     command = ["handler.lambda_handler"]
   }
 
-  vpc_config {
-    subnet_ids         = data.aws_subnets.default.ids
-    security_group_ids = [aws_security_group.lambda_ingest.id]
-  }
-
   environment {
     variables = {
-      DATABASE_URL              = aws_ssm_parameter.db_url.value
+      DB_CLUSTER_ARN            = aws_rds_cluster.main.arn
+      DB_SECRET_ARN             = aws_secretsmanager_secret.db_credentials.arn
+      DB_NAME                   = local.db_name
       REFERENCE_DATA_S3_URI     = "s3://${aws_s3_bucket.mockdata.id}/${local.reference_data_prefix}"
       ERROR_NOTIFY_ENDPOINT_URL = var.error_notify_endpoint_url
     }
@@ -77,8 +69,7 @@ resource "aws_lambda_function" "payment_ingest" {
   depends_on = [
     aws_cloudwatch_log_group.lambda_ingest,
     aws_iam_role_policy_attachment.lambda_ingest_basic,
-    aws_iam_role_policy_attachment.lambda_ingest_vpc,
-    aws_vpc_endpoint.s3,
+    aws_secretsmanager_secret_version.db_credentials,
   ]
 
   lifecycle {

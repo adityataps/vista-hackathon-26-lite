@@ -39,7 +39,7 @@ public class ErrorAgentProperties {
     private String modelId = "anthropic.claude-sonnet-4-6-v1:0";
 
     /** AWS region for the Bedrock Runtime client. */
-    private String bedrockRegion = "us-west-2";
+    private String bedrockRegion = "us-east-1";
 
     /** Max tokens the model may generate per resolution. */
     private int maxTokens = 1024;

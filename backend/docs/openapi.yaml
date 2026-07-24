@@ -43,7 +43,7 @@ info:
     email: aditya.tapshalkar@finastra.com
 
 servers:
-  - url: https://<function-id>.lambda-url.us-west-2.on.aws
+  - url: https://<function-id>.lambda-url.us-east-1.on.aws
     description: Production backend (Lambda Function URL, response streaming enabled)
   - url: http://localhost:8000
     description: Local development (uvicorn --reload)
@@ -108,7 +108,8 @@ paths:
       summary: Generate synthetic pacs.008 payments and seed the database
       description: |
         Generates a batch of CBPR+ SR2025 pacs.008 XML messages with configurable
-        error injection. Writes to Aurora PostgreSQL (payments + exceptions + payment_events)
+        error injection. Writes to Aurora PostgreSQL via the RDS Data API
+        (payments + exceptions + payment_events)
         and optionally uploads raw XML to S3.
 
         Faulty messages are automatically enqueued for AI pre-check (background intake

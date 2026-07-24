@@ -1,60 +1,279 @@
+import json
 import logging
 import os
+import re
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
 
-import psycopg2
-from pgvector.psycopg2 import register_vector
+import boto3
 
 logger = logging.getLogger(__name__)
 
-_db_conn = None
 _schema_done = False
+_data_api_client: Any = None
+
+_NAMED_PARAM_RE = re.compile(r"%\(([^)]+)\)s")
+_POSITIONAL_PARAM_RE = re.compile(r"%s")
 
 
-def _connect_db():
-    conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=30)
-    register_vector(conn)
-    return conn
+class DataAPIConnection:
+    def __init__(self, resource_arn: str, secret_arn: str, database: str):
+        self.resource_arn = resource_arn
+        self.secret_arn = secret_arn
+        self.database = database
+        self.autocommit = False
+        self.closed = False
+        self._transaction_id: str | None = None
+
+    def cursor(self):
+        return DataAPICursor(self)
+
+    def commit(self):
+        if self._transaction_id:
+            _data_api().commit_transaction(
+                resourceArn=self.resource_arn,
+                secretArn=self.secret_arn,
+                transactionId=self._transaction_id,
+            )
+            self._transaction_id = None
+
+    def rollback(self):
+        if self._transaction_id:
+            _data_api().rollback_transaction(
+                resourceArn=self.resource_arn,
+                secretArn=self.secret_arn,
+                transactionId=self._transaction_id,
+            )
+            self._transaction_id = None
+
+    def close(self):
+        try:
+            self.rollback()
+        finally:
+            self.closed = True
+
+    def _begin_transaction(self):
+        if self._transaction_id is None:
+            response = _data_api().begin_transaction(
+                resourceArn=self.resource_arn,
+                secretArn=self.secret_arn,
+                database=self.database,
+            )
+            self._transaction_id = response["transactionId"]
+
+    def _execute(self, sql: str, parameters: list[dict] | None = None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "resourceArn": self.resource_arn,
+            "secretArn": self.secret_arn,
+            "database": self.database,
+            "sql": sql,
+            "includeResultMetadata": True,
+        }
+        if parameters:
+            kwargs["parameters"] = parameters
+        if not self.autocommit:
+            self._begin_transaction()
+            kwargs["transactionId"] = self._transaction_id
+        return _data_api().execute_statement(**kwargs)
+
+
+class DataAPICursor:
+    def __init__(self, conn: DataAPIConnection):
+        self.conn = conn
+        self._rows: list[tuple] = []
+        self.rowcount = -1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql: str, params: Any = None):
+        translated_sql, translated_params = _translate_sql(sql, params)
+        response = self.conn._execute(translated_sql, translated_params)
+        self._rows = _decode_rows(response)
+        self.rowcount = len(self._rows) if self._rows else response.get("numberOfRecordsUpdated", 0)
+        return self
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+def _data_api():
+    global _data_api_client
+    if _data_api_client is None:
+        _data_api_client = boto3.client(
+            "rds-data",
+            region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        )
+    return _data_api_client
+
+
+def _db_settings() -> tuple[str, str, str] | None:
+    resource_arn = os.environ.get("DB_CLUSTER_ARN", "")
+    secret_arn = os.environ.get("DB_SECRET_ARN", "")
+    database = os.environ.get("DB_NAME", "payinvestigator")
+    if not resource_arn or not secret_arn:
+        return None
+    return resource_arn, secret_arn, database
+
+
+def _translate_sql(sql: str, params: Any = None) -> tuple[str, list[dict]]:
+    if params is None:
+        return sql, []
+
+    if isinstance(params, dict):
+        used_keys: list[str] = []
+        seen: set[str] = set()
+
+        def replace(match: re.Match[str]) -> str:
+            key = match.group(1)
+            if key not in params:
+                raise KeyError(f"Missing SQL parameter: {key}")
+            if key not in seen:
+                seen.add(key)
+                used_keys.append(key)
+            return f":{key}"
+
+        translated = _NAMED_PARAM_RE.sub(replace, sql)
+        return translated, [_to_data_api_param(key, params[key]) for key in used_keys]
+
+    values = list(params) if isinstance(params, (list, tuple)) else [params]
+    index = 0
+
+    def replace(_match: re.Match[str]) -> str:
+        nonlocal index
+        index += 1
+        return f":p{index}"
+
+    translated = _POSITIONAL_PARAM_RE.sub(replace, sql)
+    if index != len(values):
+        raise ValueError(f"SQL placeholder mismatch: expected {index} params, got {len(values)}")
+    return translated, [_to_data_api_param(f"p{i + 1}", value) for i, value in enumerate(values)]
+
+
+def _to_data_api_param(name: str, value: Any) -> dict[str, Any]:
+    param: dict[str, Any] = {"name": name}
+    if value is None:
+        param["value"] = {"isNull": True}
+        return param
+
+    if isinstance(value, bool):
+        param["value"] = {"booleanValue": value}
+        return param
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        param["value"] = {"longValue": value}
+        return param
+
+    if isinstance(value, Decimal):
+        param["value"] = {"stringValue": format(value, "f")}
+        param["typeHint"] = "DECIMAL"
+        return param
+
+    if isinstance(value, float):
+        param["value"] = {"doubleValue": value}
+        return param
+
+    if isinstance(value, datetime):
+        param["value"] = {"stringValue": value.isoformat(sep=" ", timespec="seconds")}
+        param["typeHint"] = "TIMESTAMP"
+        return param
+
+    if isinstance(value, date):
+        param["value"] = {"stringValue": value.isoformat()}
+        param["typeHint"] = "DATE"
+        return param
+
+    if isinstance(value, (dict, list)):
+        param["value"] = {"stringValue": json.dumps(value)}
+        param["typeHint"] = "JSON"
+        return param
+
+    param["value"] = {"stringValue": str(value)}
+    return param
+
+
+def _decode_rows(response: dict[str, Any]) -> list[tuple]:
+    metadata = response.get("columnMetadata") or []
+    type_names = [column.get("typeName", "") for column in metadata]
+    rows = []
+    for record in response.get("records", []):
+        rows.append(tuple(_decode_field(field, type_names[idx] if idx < len(type_names) else "") for idx, field in enumerate(record)))
+    return rows
+
+
+def _decode_field(field: dict[str, Any], type_name: str) -> Any:
+    if field.get("isNull"):
+        return None
+    if "stringValue" in field:
+        value = field["stringValue"]
+        normalized = type_name.lower()
+        if normalized in {"json", "jsonb"}:
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+        if normalized in {"date"}:
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return value
+        if normalized in {"timestamp", "timestamptz", "timestamp with time zone", "timestamp without time zone"}:
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return value
+        if normalized in {"numeric", "decimal"}:
+            try:
+                return Decimal(value)
+            except Exception:
+                return value
+        return value
+    if "longValue" in field:
+        return field["longValue"]
+    if "doubleValue" in field:
+        return field["doubleValue"]
+    if "booleanValue" in field:
+        return field["booleanValue"]
+    if "arrayValue" in field:
+        array_value = field["arrayValue"]
+        return [_decode_field(item, type_name) for item in array_value.get("stringValues", [])]
+    return None
 
 
 def get_db():
-    global _db_conn, _schema_done
-    if not os.environ.get("DATABASE_URL"):
+    global _schema_done
+    settings = _db_settings()
+    if not settings:
         return None
+    conn = DataAPIConnection(*settings)
     try:
-        if _db_conn is None or _db_conn.closed:
-            _db_conn = _connect_db()
-            _schema_done = False
-        else:
-            try:
-                _db_conn.rollback()
-            except Exception:
-                try:
-                    _db_conn.close()
-                except Exception:
-                    pass
-                _db_conn = _connect_db()
-                _schema_done = False
         if not _schema_done:
-            _ensure_schema(_db_conn)
+            _ensure_schema(conn)
             _schema_done = True
     except Exception as exc:
         logger.warning("DB connect failed: %s", exc)
         return None
-    return _db_conn
+    return conn
 
 
 def _ensure_schema(conn):
     old_autocommit = conn.autocommit
     conn.autocommit = True
 
-    def _run(stmt):
+    def _run(stmt: str):
         try:
             with conn.cursor() as cur:
                 cur.execute(stmt)
-        except Exception as exc:
-            logger.debug("Schema stmt skipped (%s): %.60s", type(exc).__name__, stmt.strip()[:60])
+        except Exception:
+            logger.debug("Schema stmt skipped: %.60s", stmt.strip()[:60])
 
-    _run("SET lock_timeout = '5s'")
     _run("CREATE EXTENSION IF NOT EXISTS vector")
 
     _run("""

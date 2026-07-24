@@ -79,10 +79,10 @@ def get_resolution_history(error_code: str) -> str:
             FROM investigations i
             JOIN exceptions e ON e.id = i.exception_id
             WHERE i.approval_status = 'approved'
-              AND e.detected_errors @> %s::jsonb
+              AND e.detected_errors @> CAST(%s AS jsonb)
             ORDER BY i.completed_at DESC
             LIMIT 5
-        """, (json.dumps([{"code": error_code}]),))
+        """, ([{"code": error_code}],))
         rows = cur.fetchall()
     history = [
         {"msg_id": r[0], "recommendation": r[1], "resolved_at": str(r[2])}
