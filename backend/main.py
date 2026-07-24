@@ -112,7 +112,7 @@ def _seed_write_db(conn, messages: list, s3_prefix: str):
                 """, (msg["msg_id"], msg["uetr"], json.dumps(detected), payment_id))
         conn.commit()
         if msg["is_faulty"]:
-            _precheck_queue.put_nowait(msg["msg_id"])
+            _enqueue_precheck(msg["msg_id"])
 
 
 def _write_events(conn, messages):
@@ -160,9 +160,9 @@ async def lifespan(app: FastAPI):
         conn.commit()
         for msg_id, precheck_summary in rows:
             if precheck_summary:
-                _auto_investigate_queue.put_nowait(msg_id)
+                _enqueue_auto_investigate(msg_id)
             else:
-                _precheck_queue.put_nowait(msg_id)
+                _enqueue_precheck(msg_id)
         if rows:
             logger.info(
                 "Startup: enqueued %d exceptions (%d need precheck)",
@@ -172,8 +172,9 @@ async def lifespan(app: FastAPI):
 
     precheck_worker = asyncio.create_task(_precheck_worker())
     auto_investigate_worker = asyncio.create_task(_auto_investigate_worker())
+    pending_exception_scanner = asyncio.create_task(_pending_exception_scanner())
     yield
-    for task in (precheck_worker, auto_investigate_worker):
+    for task in (precheck_worker, auto_investigate_worker, pending_exception_scanner):
         task.cancel()
         try:
             await task
@@ -188,6 +189,20 @@ _investigation_graph = None
 
 _precheck_queue: asyncio.Queue = asyncio.Queue()
 _auto_investigate_queue: asyncio.Queue = asyncio.Queue()
+_queued_prechecks: set[str] = set()
+_queued_investigations: set[str] = set()
+
+
+def _enqueue_precheck(msg_id: str) -> None:
+    if msg_id and msg_id not in _queued_prechecks:
+        _queued_prechecks.add(msg_id)
+        _precheck_queue.put_nowait(msg_id)
+
+
+def _enqueue_auto_investigate(msg_id: str) -> None:
+    if msg_id and msg_id not in _queued_investigations:
+        _queued_investigations.add(msg_id)
+        _auto_investigate_queue.put_nowait(msg_id)
 
 
 def get_graph():
@@ -300,7 +315,7 @@ async def _run_precheck(tx_id: str) -> None:
             ))
         conn.commit()
         logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
-        _auto_investigate_queue.put_nowait(tx_id)
+        _enqueue_auto_investigate(tx_id)
 
     except Exception:
         with conn.cursor() as cur:
@@ -321,7 +336,32 @@ async def _precheck_worker() -> None:
         except Exception as exc:
             logger.error("Pre-check failed for %s: %s", tx_id, exc)
         finally:
+            _queued_prechecks.discard(tx_id)
             _precheck_queue.task_done()
+
+
+async def _pending_exception_scanner() -> None:
+    """Detect exceptions inserted directly into the DB and enqueue pre-checks."""
+    while True:
+        await asyncio.sleep(10)
+        conn = get_db()
+        if not conn:
+            continue
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT msg_id
+                    FROM exceptions
+                    WHERE status = 'pending'
+                      AND precheck_summary IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT 50
+                """)
+                rows = cur.fetchall()
+            for (msg_id,) in rows:
+                _enqueue_precheck(msg_id)
+        except Exception as exc:
+            logger.debug("Pending exception scan skipped: %s", exc)
 
 
 async def _run_full_investigation_bg(tx_id: str) -> None:
@@ -517,6 +557,7 @@ async def _auto_investigate_worker() -> None:
         except Exception as exc:
             logger.error("Auto-investigation error for %s: %s", tx_id, exc)
         finally:
+            _queued_investigations.discard(tx_id)
             _auto_investigate_queue.task_done()
 
 

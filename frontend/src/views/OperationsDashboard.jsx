@@ -108,8 +108,8 @@ export default function OperationsDashboard() {
             </BarChart>
           </ResponsiveContainer>
           <div className="footnote">
-            Saving per case = $27.50 manual baseline − actual avg LLM token cost (claude-sonnet-4-6 at
-            $0.003/1k input · $0.015/1k output). Total hourly saving = saving per case × resolved count.
+            Saving per case = $27.50 manual baseline − actual avg LLM token cost (Claude Haiku 4.5 at
+            $0.001/1k input · $0.005/1k output). Total hourly saving = saving per case × resolved count.
             Per-case saving shown for all hours as the potential saving; total saving only accrues when
             investigations complete.
           </div>

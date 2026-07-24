@@ -4,8 +4,9 @@ SQS receives S3 ObjectCreated events for the payments/ prefix.
 Downloads each XML from S3, parses key pacs.008 fields, runs business-error
 detection (error_rules.py, ported from
 jobs/pacs008-generator/agent_error_knowledge.yaml), upserts into the payments
-table (ON CONFLICT msg_id DO NOTHING for idempotency), and - only if an error
-was detected - POSTs {payment_id, error_msg} to a configurable endpoint.
+table (ON CONFLICT msg_id DO NOTHING for idempotency), writes/upserts an
+`exceptions` row for faulty payments, and can optionally POST
+{payment_id, error_msg} to a configurable endpoint.
 
 Configuration (environment variables, set in infra/lambda.tf):
   DATABASE_URL            - Postgres connection string (required)
@@ -93,6 +94,18 @@ def _ensure_schema(conn):
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS has_error BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS error_msg TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_has_error ON payments (has_error)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS exceptions (
+                id              SERIAL PRIMARY KEY,
+                payment_id      INTEGER,
+                msg_id          TEXT UNIQUE NOT NULL,
+                uetr            TEXT NOT NULL,
+                detected_errors JSONB NOT NULL DEFAULT '[]',
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TIMESTAMPTZ DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
     conn.commit()
 
 
@@ -236,6 +249,21 @@ def _notify_backend_exceptions(msg_id: str, uetr: str, hits: list):
         logger.warning("Backend exception notification failed (non-fatal): %s", exc)
 
 
+def _upsert_exception(payment_id: int, msg_id: str, uetr: str, hits: list) -> None:
+    conn = _get_db()
+    detected = [{"code": h.code, "field": "", "value": h.message} for h in hits]
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO exceptions (msg_id, uetr, detected_errors, payment_id, status)
+            VALUES (%s, %s, %s, %s, 'pending')
+            ON CONFLICT (msg_id) DO UPDATE SET
+                detected_errors = EXCLUDED.detected_errors,
+                payment_id = EXCLUDED.payment_id,
+                updated_at = NOW()
+        """, (msg_id, uetr, json.dumps(detected), payment_id))
+    conn.commit()
+
+
 def lambda_handler(event, context):
     s3 = boto3.client('s3')
     processed = failed = skipped = 0
@@ -269,6 +297,7 @@ def lambda_handler(event, context):
                 )
                 if payment_id is not None and has_error:
                     notify_payment_error(payment_id, error_msg)
+                    _upsert_exception(payment_id, parsed.get('msg_id', ''), parsed.get('uetr', ''), hits)
                     _notify_backend_exceptions(parsed.get('msg_id', ''), parsed.get('uetr', ''), hits)
                 processed += 1
             except Exception as exc:
