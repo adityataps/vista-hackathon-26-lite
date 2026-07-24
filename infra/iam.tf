@@ -1,74 +1,50 @@
-# ── Shared assume-role policy for ECS tasks ──────────────────────────────────
-data "aws_iam_policy_document" "ecs_task_assume" {
+data "aws_iam_policy_document" "lambda_assume" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
       type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
+      identifiers = ["lambda.amazonaws.com"]
     }
   }
 }
 
-# ── Task execution role (ECR pull + CloudWatch Logs) ─────────────────────────
-resource "aws_iam_role" "task_execution" {
-  name               = "${var.app_name}-task-execution"
-  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
+resource "aws_iam_role" "lambda_backend" {
+  name               = "${var.app_name}-lambda-backend"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-resource "aws_iam_role_policy_attachment" "task_execution_managed" {
-  role       = aws_iam_role.task_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+resource "aws_iam_role_policy_attachment" "lambda_backend_basic" {
+  role       = aws_iam_role.lambda_backend.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-data "aws_iam_policy_document" "task_execution" {
-  statement {
-    actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"]
-  }
-
-  statement {
-    actions = [
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:BatchGetImage",
-    ]
-    resources = ["arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/payinvestigator-*"]
-  }
-
-  statement {
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-    resources = ["arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/payinvestigator-*:*"]
-  }
-
-  # Allow ECS to fetch the DB connection string and LangSmith API key from SSM at container start
-  statement {
-    actions   = ["ssm:GetParameters"]
-    resources = [aws_ssm_parameter.db_url.arn, aws_ssm_parameter.langsmith_api_key.arn]
-  }
-
-  # Decrypt the SSM SecureString (uses the AWS-managed key for SSM)
-  statement {
-    actions   = ["kms:Decrypt"]
-    resources = ["arn:aws:kms:${var.region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
-  }
+resource "aws_iam_role_policy_attachment" "lambda_backend_vpc" {
+  role       = aws_iam_role.lambda_backend.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
-resource "aws_iam_role_policy" "task_execution" {
-  name   = "${var.app_name}-task-execution"
-  role   = aws_iam_role.task_execution.id
-  policy = data.aws_iam_policy_document.task_execution.json
+resource "aws_iam_role" "lambda_ingest" {
+  name               = "${var.app_name}-lambda-ingest"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-# ── Backend task role (Bedrock + S3) ─────────────────────────────────────────
-resource "aws_iam_role" "backend_task" {
-  name               = "${var.app_name}-backend-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
+resource "aws_iam_role_policy_attachment" "lambda_ingest_basic" {
+  role       = aws_iam_role.lambda_ingest.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-data "aws_iam_policy_document" "backend_task" {
+resource "aws_iam_role_policy_attachment" "lambda_ingest_vpc" {
+  role       = aws_iam_role.lambda_ingest.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+locals {
+  haiku_model_id      = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  haiku_foundation_id = "anthropic.claude-haiku-4-5-20251001-v1:0"
+  titan_embed_model   = "amazon.titan-embed-text-v2:0"
+}
+
+data "aws_iam_policy_document" "lambda_backend" {
   statement {
     actions = [
       "bedrock:InvokeModel",
@@ -77,15 +53,19 @@ data "aws_iam_policy_document" "backend_task" {
       "bedrock:ConverseStream",
     ]
     resources = [
-      "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6",
-      "arn:aws:bedrock:${var.region}::foundation-model/anthropic.claude-sonnet-4-6",
-      "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-6",
+      "arn:aws:bedrock:*::foundation-model/${local.haiku_foundation_id}",
+      "arn:aws:bedrock:${var.region}::foundation-model/${local.haiku_foundation_id}",
+      "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/${local.haiku_model_id}",
+      "arn:aws:bedrock:*::foundation-model/${local.titan_embed_model}",
+      "arn:aws:bedrock:${var.region}::foundation-model/${local.titan_embed_model}",
     ]
   }
+
   statement {
     actions   = ["bedrock:ApplyGuardrail"]
     resources = [aws_bedrock_guardrail.pay_investigator.guardrail_arn]
   }
+
   statement {
     actions = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
     resources = [
@@ -93,29 +73,48 @@ data "aws_iam_policy_document" "backend_task" {
       "${aws_s3_bucket.mockdata.arn}/*",
     ]
   }
+}
+
+resource "aws_iam_role_policy" "lambda_backend" {
+  name   = "${var.app_name}-lambda-backend"
+  role   = aws_iam_role.lambda_backend.id
+  policy = data.aws_iam_policy_document.lambda_backend.json
+}
+
+locals {
+  reference_data_prefix = "reference/"
+}
+
+data "aws_iam_policy_document" "lambda_ingest" {
   statement {
-    actions = ["s3:GetObject", "s3:ListBucket"]
-    resources = [
-      aws_s3_bucket.knowledge_base.arn,
-      "${aws_s3_bucket.knowledge_base.arn}/*",
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.mockdata.arn}/payments/*"]
+  }
+
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.mockdata.arn}/${local.reference_data_prefix}*"]
+  }
+
+  statement {
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
     ]
-  }
-  statement {
-    actions   = ["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"]
-    resources = [aws_bedrockagent_knowledge_base.main.arn]
+    resources = [aws_sqs_queue.payment_ingest.arn]
   }
 }
 
-resource "aws_iam_role_policy" "backend_task" {
-  name   = "${var.app_name}-backend-task"
-  role   = aws_iam_role.backend_task.id
-  policy = data.aws_iam_policy_document.backend_task.json
+resource "aws_iam_role_policy" "lambda_ingest" {
+  name   = "${var.app_name}-lambda-ingest"
+  role   = aws_iam_role.lambda_ingest.id
+  policy = data.aws_iam_policy_document.lambda_ingest.json
 }
 
-# ── GitHub Actions OIDC provider + role ──────────────────────────────────────
 resource "aws_iam_openid_connect_provider" "github_actions" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
     "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
@@ -137,7 +136,7 @@ data "aws_iam_policy_document" "github_actions_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:adityataps/vista-hackathon-26:*"]
+      values   = ["repo:adityataps/vista-hackathon-26-lite:*"]
     }
   }
 }
@@ -152,6 +151,7 @@ data "aws_iam_policy_document" "github_actions" {
     actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
   }
+
   statement {
     actions = [
       "ecr:BatchCheckLayerAvailability",
@@ -162,28 +162,36 @@ data "aws_iam_policy_document" "github_actions" {
     ]
     resources = [
       aws_ecr_repository.backend.arn,
-      aws_ecr_repository.frontend.arn,
       aws_ecr_repository.ingest.arn,
     ]
   }
+
   statement {
-    actions   = ["lambda:UpdateFunctionCode"]
-    resources = [aws_lambda_function.payment_ingest.arn]
-  }
-  statement {
-    actions   = ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"]
-    resources = ["*"]
-  }
-  statement {
-    actions   = ["ecs:UpdateService", "ecs:DescribeServices"]
-    resources = ["*"]
-  }
-  statement {
-    actions = ["iam:PassRole"]
-    resources = [
-      aws_iam_role.task_execution.arn,
-      aws_iam_role.backend_task.arn,
+    actions = [
+      "lambda:UpdateFunctionCode",
+      "lambda:GetFunctionUrlConfig",
     ]
+    resources = [
+      aws_lambda_function.backend.arn,
+      aws_lambda_function.payment_ingest.arn,
+    ]
+  }
+
+  statement {
+    actions = [
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+    ]
+    resources = [aws_s3_bucket.frontend.arn]
+  }
+
+  statement {
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:GetObject",
+    ]
+    resources = ["${aws_s3_bucket.frontend.arn}/*"]
   }
 }
 
