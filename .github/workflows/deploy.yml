@@ -6,14 +6,10 @@ on:
 
 env:
   AWS_REGION: us-west-2
+  APP_NAME: payinvestigator
   ECR_BACKEND_REPO: payinvestigator-backend
-  ECR_FRONTEND_REPO: payinvestigator-frontend
   ECR_INGEST_REPO: payinvestigator-ingest
-  ECS_CLUSTER: payinvestigator
-  BACKEND_SERVICE: payinvestigator-backend
-  FRONTEND_SERVICE: payinvestigator-frontend
-  BACKEND_TASK_FAMILY: payinvestigator-backend
-  FRONTEND_TASK_FAMILY: payinvestigator-frontend
+  LAMBDA_BACKEND_NAME: payinvestigator-backend
   LAMBDA_INGEST_NAME: payinvestigator-payment-xml-ingest
 
 permissions:
@@ -38,6 +34,7 @@ jobs:
             backend:
               - 'backend/**'
               - 'jobs/pacs008-generator/**'
+              - 'infra/assets/**'
             frontend:
               - 'frontend/**'
 
@@ -109,28 +106,12 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_BACKEND_REPO:latest
           echo "image=$ECR_REGISTRY/$ECR_BACKEND_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Download backend task definition
+      - name: Deploy backend Lambda
         run: |
-          aws ecs describe-task-definition \
-            --task-definition $BACKEND_TASK_FAMILY \
-            --query taskDefinition \
-            --region $AWS_REGION > backend-task-def.json
-
-      - name: Render backend task definition with new image
-        id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: backend-task-def.json
-          container-name: backend
-          image: ${{ steps.build.outputs.image }}
-
-      - name: Deploy backend to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
-          service: ${{ env.BACKEND_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+          aws lambda update-function-code \
+            --function-name $LAMBDA_BACKEND_NAME \
+            --image-uri ${{ steps.build.outputs.image }} \
+            --region $AWS_REGION
 
   deploy-frontend:
     needs: changes
@@ -145,42 +126,29 @@ jobs:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/payinvestigator-github-actions
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Build and push frontend image
-        id: build
+      - name: Resolve backend URL and frontend bucket
+        id: runtime
+        run: |
+          echo "api_base_url=$(aws lambda get-function-url-config --function-name $LAMBDA_BACKEND_NAME --query FunctionUrl --output text --region $AWS_REGION)" >> $GITHUB_OUTPUT
+          echo "bucket=$APP_NAME-frontend-${{ secrets.AWS_ACCOUNT_ID }}" >> $GITHUB_OUTPUT
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          VITE_API_BASE_URL: ${{ steps.runtime.outputs.api_base_url }}
+        run: npm run build
+
+      - name: Sync frontend to S3 website bucket
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_FRONTEND_REPO:$IMAGE_TAG \
-                       -t $ECR_REGISTRY/$ECR_FRONTEND_REPO:latest \
-                       ./frontend
-          docker push $ECR_REGISTRY/$ECR_FRONTEND_REPO:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_FRONTEND_REPO:latest
-          echo "image=$ECR_REGISTRY/$ECR_FRONTEND_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Download frontend task definition
-        run: |
-          aws ecs describe-task-definition \
-            --task-definition $FRONTEND_TASK_FAMILY \
-            --query taskDefinition \
-            --region $AWS_REGION > frontend-task-def.json
-
-      - name: Render frontend task definition with new image
-        id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: frontend-task-def.json
-          container-name: frontend
-          image: ${{ steps.build.outputs.image }}
-
-      - name: Deploy frontend to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
-          service: ${{ env.FRONTEND_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+          aws s3 sync frontend/dist s3://${{ steps.runtime.outputs.bucket }} --delete --region $AWS_REGION

@@ -37,14 +37,14 @@ resource "aws_bedrock_guardrail" "pay_investigator" {
   # Block harmful content
   content_policy_config {
     filters_config {
-      type             = "HATE"
-      input_strength   = "HIGH"
-      output_strength  = "HIGH"
+      type            = "HATE"
+      input_strength  = "HIGH"
+      output_strength = "HIGH"
     }
     filters_config {
-      type             = "VIOLENCE"
-      input_strength   = "HIGH"
-      output_strength  = "HIGH"
+      type            = "VIOLENCE"
+      input_strength  = "HIGH"
+      output_strength = "HIGH"
     }
   }
 }
