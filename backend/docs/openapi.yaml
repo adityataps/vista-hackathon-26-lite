@@ -4,7 +4,7 @@ info:
   description: |
     AI-powered payment exception investigation and monitoring API.
 
-    Built on AWS Bedrock (claude-sonnet-4-6) with LangGraph multi-agent orchestration.
+    Built on AWS Bedrock (Claude Haiku 4.5) with LangGraph multi-agent orchestration.
 
     ## Core flows
 
@@ -23,7 +23,7 @@ info:
 
     4. **Report Q&A** — analysts can ask follow-up questions on any completed investigation.
        The chatbot has the full report as context and can call `search_knowledge_base` against
-       the Bedrock Knowledge Base (KB ID `OGQEU4WHIQ`).
+       pgvector-backed KB chunks embedded with Titan Text Embeddings v2.
 
     5. **Operations Dashboard** — KPI, volume, savings, exception breakdown, AI stats,
        and token-cost endpoints drive the React dashboard.
@@ -35,22 +35,22 @@ info:
     No authentication in the hackathon build. Production would add API key or JWT.
 
     ## SSE keepalive
-    The investigate endpoint emits `: keepalive` comments every 15 s to prevent ALB
-    idle-timeout from killing long-running investigations.
+    The investigate endpoint emits `: keepalive` comments every 15 s so Lambda Function URL
+    response streams stay active during long-running investigations.
   version: "1.0.0"
   contact:
     name: Aditya Tapshalkar
     email: aditya.tapshalkar@finastra.com
 
 servers:
-  - url: https://vistahack26.tapshalkar.com
-    description: Production (ECS Fargate, ALB, us-west-2)
+  - url: https://<function-id>.lambda-url.us-west-2.on.aws
+    description: Production backend (Lambda Function URL, response streaming enabled)
   - url: http://localhost:8000
     description: Local development (uvicorn --reload)
 
 tags:
   - name: health
-    description: Health and liveness probes (ALB target group)
+    description: Health and liveness probes for the Lambda-hosted FastAPI service
   - name: seed
     description: Synthetic payment generation and database seeding
   - name: exceptions
@@ -69,7 +69,7 @@ paths:
   /health:
     get:
       tags: [health]
-      summary: Health check (ALB target group probe)
+      summary: Health check (Lambda container probe)
       operationId: health
       responses:
         '200':
@@ -108,7 +108,7 @@ paths:
       summary: Generate synthetic pacs.008 payments and seed the database
       description: |
         Generates a batch of CBPR+ SR2025 pacs.008 XML messages with configurable
-        error injection. Writes to RDS PostgreSQL (payments + exceptions + payment_events)
+        error injection. Writes to Aurora PostgreSQL (payments + exceptions + payment_events)
         and optionally uploads raw XML to S3.
 
         Faulty messages are automatically enqueued for AI pre-check (background intake
@@ -228,7 +228,7 @@ paths:
         `done` type event. See `InvestigationEvent` schema for all event shapes.
 
         **Keepalive:** `: keepalive` comments are emitted every 15 s of silence to
-        prevent ALB idle-timeout (default 60 s) from dropping the connection.
+        keep long-lived Function URL streams active through quiet periods.
       operationId: investigate
       parameters:
         - name: tx_id
@@ -411,9 +411,9 @@ paths:
       tags: [metrics]
       summary: Hourly cost-per-case by rail (today, 08:00–17:00)
       description: |
-        Compares AI investigation cost ($0.29/case average) against the manual baseline
+        Compares AI investigation cost ($0.097/case average) against the manual baseline
         ($27.50/case — industry midpoint $15–$40). Only resolved hours show savings.
-        Token pricing: $0.003/1k input, $0.015/1k output (claude-sonnet-4-6, us-west-2).
+        Token pricing: $0.001/1k input, $0.005/1k output (Claude Haiku 4.5 on Bedrock).
       operationId: getSavings
       responses:
         '200':
