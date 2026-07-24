@@ -18,11 +18,6 @@ resource "aws_iam_role_policy_attachment" "lambda_backend_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_backend_vpc" {
-  role       = aws_iam_role.lambda_backend.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
-
 resource "aws_iam_role" "lambda_ingest" {
   name               = "${var.app_name}-lambda-ingest"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -31,11 +26,6 @@ resource "aws_iam_role" "lambda_ingest" {
 resource "aws_iam_role_policy_attachment" "lambda_ingest_basic" {
   role       = aws_iam_role.lambda_ingest.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_ingest_vpc" {
-  role       = aws_iam_role.lambda_ingest.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 locals {
@@ -73,6 +63,22 @@ data "aws_iam_policy_document" "lambda_backend" {
       "${aws_s3_bucket.mockdata.arn}/*",
     ]
   }
+
+  statement {
+    actions = [
+      "rds-data:ExecuteStatement",
+      "rds-data:BatchExecuteStatement",
+      "rds-data:BeginTransaction",
+      "rds-data:CommitTransaction",
+      "rds-data:RollbackTransaction",
+    ]
+    resources = [aws_rds_cluster.main.arn]
+  }
+
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.db_credentials.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_backend" {
@@ -103,6 +109,22 @@ data "aws_iam_policy_document" "lambda_ingest" {
       "sqs:GetQueueAttributes",
     ]
     resources = [aws_sqs_queue.payment_ingest.arn]
+  }
+
+  statement {
+    actions = [
+      "rds-data:ExecuteStatement",
+      "rds-data:BatchExecuteStatement",
+      "rds-data:BeginTransaction",
+      "rds-data:CommitTransaction",
+      "rds-data:RollbackTransaction",
+    ]
+    resources = [aws_rds_cluster.main.arn]
+  }
+
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.db_credentials.arn]
   }
 }
 

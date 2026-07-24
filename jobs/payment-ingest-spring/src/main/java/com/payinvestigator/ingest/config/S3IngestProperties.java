@@ -10,8 +10,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "payment-ingest.s3")
 public class S3IngestProperties {
 
-    /** AWS region for the S3 client, e.g. us-west-2. */
-    private String region = "us-west-2";
+    /** AWS region for the S3 client, e.g. us-east-1. */
+    private String region = "us-east-1";
 
     /** Bucket to poll for new payment XML files. */
     private String bucket;

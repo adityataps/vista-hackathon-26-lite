@@ -17,7 +17,7 @@ The core value prop: replace 15–45 minutes of manual analyst work (clicking th
 | Responsible AI | Amazon Bedrock Guardrails — topic denial, PII redaction, content filtering |
 | Knowledge Base | pgvector in Aurora PostgreSQL + Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`) |
 | Backend | FastAPI (Python) packaged for AWS Lambda via Lambda Web Adapter + Function URL |
-| Data store | Aurora Serverless v2 PostgreSQL (psycopg2 + pgvector); `seed_db.py` seeds KB embeddings from `infra/assets/*.md` |
+| Data store | Aurora Serverless v2 PostgreSQL + Data API + pgvector; `seed_db.py` seeds KB embeddings from `infra/assets/*.md` |
 | Frontend | React + Recharts built by Vite and hosted as static assets on S3 website hosting |
 | Infra | Terraform (AWS) |
 
@@ -57,7 +57,7 @@ Exception Event
 ```
 backend/
   main.py                              FastAPI app, lifespan, /api/seed, background pre-check worker
-  db.py                                PostgreSQL connection helper (psycopg2)
+  db.py                                Aurora Data API helper + schema bootstrap
   seed_db.py                           Container startup script — seeds DB from S3 manifest
   requirements.txt
   Dockerfile
@@ -106,11 +106,11 @@ frontend/                              React + Recharts
   src/                                 3-tab dashboard: Ops, Exceptions, Monitoring
                                        Agent SSE stream panel, HITL approve/reject, Report chatbot
 
-infra/                                 Terraform (us-west-2)
+infra/                                 Terraform (us-east-1)
   main.tf                              AWS provider + default VPC/subnet data sources
   bedrock.tf                           Bedrock Guardrail (topic denial, PII, content filters)
   lambda.tf                            Backend Lambda + Function URL, payment-ingest Lambda, event source mapping
-  rds.tf                               Aurora Serverless v2 PostgreSQL + pgvector-ready connection string
+  rds.tf                               Aurora Serverless v2 PostgreSQL + pgvector + Data API secret wiring
   s3.tf                                mockdata bucket + KB source-doc bucket + public static frontend website bucket
   assets/                              KB reference docs (uploaded to KB S3 bucket)
     error-code-catalog.md
@@ -119,7 +119,7 @@ infra/                                 Terraform (us-west-2)
     duplicate-payment-resolution.md
     swift-pacs008-field-guide.md
     payment-sla-and-escalation.md
-  iam.tf / security_groups.tf / network.tf / outputs.tf / ...
+  iam.tf / security_groups.tf / outputs.tf / ...
 
 jobs/
   pacs008-generator/                   pacs.008 CBPR+ SR2025 XML generator with error injection + IBAN validator
@@ -203,7 +203,7 @@ terraform plan
 
 ## Agent Tool Calls (function calling pattern)
 
-Agents call LangChain `@tool`-decorated functions against the RDS PostgreSQL DB and external services.
+Agents call LangChain `@tool`-decorated functions against Aurora PostgreSQL via the RDS Data API and external services.
 No real external APIs — all data is synthetic.
 
 **Payment tools** (`agents/tools/payment_tools.py`):
@@ -224,7 +224,7 @@ No real external APIs — all data is synthetic.
 **Knowledge base** (`agents/tools/knowledge_base_tool.py`):
 - `search_knowledge_base(query)` → Titan embedding + pgvector cosine search over `kb_chunks`, top-5 results with content + score + doc name
 
-## Key Live Resource IDs (us-west-2)
+## Key Live Resource IDs (us-east-1)
 
 | Resource | ID |
 |---|---|
@@ -232,7 +232,7 @@ No real external APIs — all data is synthetic.
 | Embedding model | `amazon.titan-embed-text-v2:0` |
 | KB S3 bucket | `payinvestigator-kb-446643829639` |
 | Bedrock Guardrail | `elu2okf0di0w` |
-| Guardrail ARN | `arn:aws:bedrock:us-west-2:446643829639:guardrail/elu2okf0di0w` |
+| Guardrail ARN | `arn:aws:bedrock:us-east-1:446643829639:guardrail/elu2okf0di0w` |
 
 ## Judging Criteria
 

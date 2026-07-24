@@ -46,6 +46,6 @@ npm run build      # production build → dist/
 Production builds are synced to the public S3 website bucket provisioned by Terraform:
 
 ```bash
-VITE_API_BASE_URL=https://<function-id>.lambda-url.us-west-2.on.aws npm run build
+VITE_API_BASE_URL=https://<function-id>.lambda-url.us-east-1.on.aws npm run build
 aws s3 sync dist/ s3://payinvestigator-frontend-<account_id> --delete
 ```

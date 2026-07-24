@@ -21,7 +21,7 @@ def _bedrock():
     if _bedrock_runtime is None:
         _bedrock_runtime = boto3.client(
             "bedrock-runtime",
-            region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
+            region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
         )
     return _bedrock_runtime
 
@@ -140,7 +140,7 @@ def seed_knowledge_base(conn=None) -> dict[str, int | list[str] | str]:
                     cur.execute(
                         """
                         INSERT INTO kb_chunks (doc_name, chunk_index, chunk_text, embedding)
-                        VALUES (%s, %s, %s, %s::vector)
+                        VALUES (%s, %s, %s, CAST(%s AS vector))
                         ON CONFLICT (doc_name, chunk_index)
                         DO UPDATE SET chunk_text = EXCLUDED.chunk_text, embedding = EXCLUDED.embedding
                         """,
@@ -172,9 +172,9 @@ def search_chunks(query: str, limit: int = 5) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT doc_name, chunk_text, 1 - (embedding <=> %s::vector) AS score
+            SELECT doc_name, chunk_text, 1 - (embedding <=> CAST(%s AS vector)) AS score
             FROM kb_chunks
-            ORDER BY embedding <=> %s::vector
+            ORDER BY embedding <=> CAST(%s AS vector)
             LIMIT %s
             """,
             (query_vector, query_vector, limit),

@@ -18,6 +18,7 @@ resource "aws_rds_cluster" "main" {
   engine                          = "aurora-postgresql"
   engine_version                  = "16.3"
   engine_mode                     = "provisioned"
+  enable_http_endpoint            = true
   database_name                   = local.db_name
   master_username                 = local.db_user
   master_password                 = random_password.db.result
@@ -48,10 +49,22 @@ resource "aws_rds_cluster_instance" "main" {
   publicly_accessible  = false
 }
 
-resource "aws_ssm_parameter" "db_url" {
-  name  = "/${var.app_name}/db_url"
-  type  = "SecureString"
-  value = "postgresql://${local.db_user}:${random_password.db.result}@${aws_rds_cluster.main.endpoint}/${local.db_name}"
+resource "aws_secretsmanager_secret" "db_credentials" {
+  name                    = "${var.app_name}/aurora-master"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "db_credentials" {
+  secret_id = aws_secretsmanager_secret.db_credentials.id
+  secret_string = jsonencode({
+    engine              = "aurora-postgresql"
+    host                = aws_rds_cluster.main.endpoint
+    port                = 5432
+    dbname              = local.db_name
+    username            = local.db_user
+    password            = random_password.db.result
+    dbClusterIdentifier = aws_rds_cluster.main.cluster_identifier
+  })
 }
 
 resource "aws_ssm_parameter" "langsmith_api_key" {

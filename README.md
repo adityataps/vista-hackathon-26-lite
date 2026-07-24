@@ -108,7 +108,7 @@ Four pre-scripted scenarios the live demo must nail:
 | Responsible AI | Amazon Bedrock Guardrails — topic denial, PII anonymization, content filtering |
 | Knowledge Base | pgvector in Aurora PostgreSQL + Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`) |
 | Backend | FastAPI (Python) packaged for AWS Lambda via Lambda Web Adapter + Function URL |
-| Data store | Aurora Serverless v2 PostgreSQL for payments, investigations, and KB vectors |
+| Data store | Aurora Serverless v2 PostgreSQL via Data API for payments, investigations, and KB vectors |
 | Frontend | React + Recharts built by Vite and hosted on an S3 static website |
 | CI/CD | GitHub Actions → ECR/Lambda + S3 website sync (path-gated deploy jobs) |
 | Cloud | AWS (Lambda, Function URL, Aurora Serverless v2, SQS, S3, Bedrock, ECR) |
@@ -133,7 +133,7 @@ GitHub Actions (OIDC — no long-lived keys)
         ├───────────────► Lambda Function URL (FastAPI + Lambda Web Adapter)
         │                    │
         │                    ├── Bedrock (Claude Haiku 4.5 + Titan embeddings)
-        │                    └── Aurora Serverless v2 PostgreSQL + pgvector
+        │                    └── Aurora Serverless v2 PostgreSQL + Data API + pgvector
         │
         └───────────────► S3 static website (React/Vite frontend)
 
@@ -145,7 +145,7 @@ S3 payments/ prefix ─► SQS queue ─► Lambda (payment-xml-ingest) ─► A
 | Resource | Name |
 |---|---|
 | Backend Lambda | `payinvestigator-backend` (FastAPI + Lambda Web Adapter, response streaming) |
-| Backend Function URL | auto-generated `*.lambda-url.us-west-2.on.aws` |
+| Backend Function URL | auto-generated `*.lambda-url.us-east-1.on.aws` |
 | Frontend Website Bucket | `payinvestigator-frontend-<account_id>` |
 | ECR — Backend | `payinvestigator-backend` |
 | ECR — Ingest Lambda | `payinvestigator-ingest` |
@@ -155,7 +155,7 @@ S3 payments/ prefix ─► SQS queue ─► Lambda (payment-xml-ingest) ─► A
 | S3 — Mock Data | `payinvestigator-mockdata-<account_id>` |
 | S3 — Knowledge Base Source Docs | `payinvestigator-kb-<account_id>` |
 | Bedrock Guardrail | `elu2okf0di0w` |
-| Region | `us-west-2` |
+| Region | `us-east-1` |
 
 ---
 
@@ -211,16 +211,15 @@ jobs/
     handler.py              downloads XML from S3, upserts to PostgreSQL
     Dockerfile              amazon/aws-lambda-python:3.12 base
 
-infra/                      Terraform (us-west-2)
+infra/                      Terraform (us-east-1)
   main.tf                   AWS provider + default VPC/subnet data sources
   bedrock.tf                Bedrock Guardrail (topic denial, PII anonymization, content filters)
   ecr.tf                    backend + ingest ECR repos + lifecycle policies
-  rds.tf                    Aurora Serverless v2 PostgreSQL + DB connection SSM params
+  rds.tf                    Aurora Serverless v2 PostgreSQL + Data API secret wiring
   lambda.tf                 backend Lambda + Function URL, ingest Lambda, event source mapping
-  network.tf                S3 gateway endpoint + Bedrock Runtime interface endpoint
   s3.tf                     mockdata bucket + KB doc bucket + public frontend website bucket
   iam.tf                    Lambda execution roles + GitHub OIDC deploy role
-  security_groups.tf        Lambda, Aurora, and VPC endpoint SGs
+  security_groups.tf        Aurora cluster security group
   cloudwatch.tf             Lambda log groups
   sqs.tf                    SQS queue + S3 bucket notification
   assets/                   KB reference docs (6 markdown files, uploaded to KB S3 bucket)

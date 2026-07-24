@@ -130,7 +130,7 @@ def ingest_exception(req: IngestExceptionRequest):
                 detected_errors = EXCLUDED.detected_errors,
                 updated_at = NOW()
             RETURNING id
-        """, (req.msg_id, req.uetr, json.dumps(req.detected_errors), req.payment_id))
+        """, (req.msg_id, req.uetr, req.detected_errors, req.payment_id))
         exception_id = cur.fetchone()[0]
     conn.commit()
     logger.info("Exception created/updated: id=%s msg_id=%s", exception_id, req.msg_id)
@@ -316,15 +316,15 @@ async def investigate(tx_id: str):
                     input_tokens=%s, output_tokens=%s, report_content=%s
                 WHERE id=%s
             """, (
-                json.dumps(accumulated_steps),
-                json.dumps({
+                accumulated_steps,
+                {
                     "technical": final_state.get("technical_findings"),
                     "compliance": final_state.get("compliance_findings"),
-                }),
-                json.dumps(recommendation),
+                },
+                recommendation,
                 total_input_tokens,
                 total_output_tokens,
-                json.dumps(report_content) if report_content else None,
+                report_content if report_content else None,
                 inv_id,
             ))
             # Also populate the recommendation and recommended_sql in the exceptions table
@@ -335,7 +335,7 @@ async def investigate(tx_id: str):
                     recommended_sql=%s
                 WHERE id=%s
             """, (
-                json.dumps(recommendation),
+                recommendation,
                 recommended_sql,
                 exc_id,
             ))
