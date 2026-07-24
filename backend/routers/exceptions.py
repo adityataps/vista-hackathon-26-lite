@@ -135,8 +135,8 @@ def ingest_exception(req: IngestExceptionRequest):
     conn.commit()
     logger.info("Exception created/updated: id=%s msg_id=%s", exception_id, req.msg_id)
 
-    from main import _precheck_queue
-    _precheck_queue.put_nowait(req.msg_id)
+    from main import _enqueue_precheck
+    _enqueue_precheck(req.msg_id)
 
     return {"exception_id": exception_id}
 
@@ -276,8 +276,8 @@ async def investigate(tx_id: str):
         total_output_tokens = 0
 
         # Wrap the async generator so we can emit SSE keepalive comments every
-        # 15 s of silence — without these the ALB idle_timeout kills the
-        # connection mid-investigation (NS_ERROR_NET_PARTIAL_TRANSFER).
+        # 15 s of silence — without these some clients/intermediaries treat a
+        # long-running streamed investigation as a stalled connection.
         aiter = graph.astream_events(initial_state, version="v2").__aiter__()
         while True:
             try:

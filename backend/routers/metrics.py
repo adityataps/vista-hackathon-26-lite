@@ -13,9 +13,9 @@ router = APIRouter()
 _SEPA_SCT_CONSTANT = 120
 _FEDWIRE_CONSTANT = 45
 _MANUAL_COST_BASELINE = 27.50   # USD per case — industry midpoint $15–$40
-_LLM_COST_PER_CASE = 0.29       # USD — average across exception types
-_INPUT_PRICE_PER_1K = 0.003     # USD per 1k input tokens, claude-sonnet-4-6 us-west-2
-_OUTPUT_PRICE_PER_1K = 0.015    # USD per 1k output tokens
+_LLM_COST_PER_CASE = 0.097      # USD — average across exception types on Claude Haiku 4.5
+_INPUT_PRICE_PER_1K = 0.001      # USD per 1k input tokens, Claude Haiku 4.5 on Bedrock
+_OUTPUT_PRICE_PER_1K = 0.005     # USD per 1k output tokens
 
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
@@ -345,18 +345,18 @@ def get_throughput():
 # ── Token costs ──────────────────────────────────────────────────────────────
 
 _STATIC_TOKEN_COSTS = [
-    {"type": "Bad IBAN (checksum)",     "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.09,
-     "precheck_avg_tokens": 1200,       "investigation_avg_tokens": 5800},
-    {"type": "Invalid BIC",             "precheck_avg_usd": 0.003, "investigation_avg_usd": 0.07,
-     "precheck_avg_tokens": 1000,       "investigation_avg_tokens": 4500},
-    {"type": "Duplicate UETR",          "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.11,
-     "precheck_avg_tokens": 1300,       "investigation_avg_tokens": 7000},
-    {"type": "Sanctions name hit",      "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.88,
-     "precheck_avg_tokens": 1400,       "investigation_avg_tokens": 55000},
-    {"type": "Missing mandatory field", "precheck_avg_usd": 0.003, "investigation_avg_usd": 0.14,
-     "precheck_avg_tokens": 1100,       "investigation_avg_tokens": 8500},
-    {"type": "FX limit breach",         "precheck_avg_usd": 0.004, "investigation_avg_usd": 0.31,
-     "precheck_avg_tokens": 1200,       "investigation_avg_tokens": 19000},
+    {"type": "Bad IBAN (checksum)",     "precheck_avg_usd": 0.0013, "investigation_avg_usd": 0.03,
+     "precheck_avg_tokens": 1200,        "investigation_avg_tokens": 5800},
+    {"type": "Invalid BIC",             "precheck_avg_usd": 0.001,  "investigation_avg_usd": 0.023,
+     "precheck_avg_tokens": 1000,        "investigation_avg_tokens": 4500},
+    {"type": "Duplicate UETR",          "precheck_avg_usd": 0.0013, "investigation_avg_usd": 0.0367,
+     "precheck_avg_tokens": 1300,        "investigation_avg_tokens": 7000},
+    {"type": "Sanctions name hit",      "precheck_avg_usd": 0.0013, "investigation_avg_usd": 0.2933,
+     "precheck_avg_tokens": 1400,        "investigation_avg_tokens": 55000},
+    {"type": "Missing mandatory field", "precheck_avg_usd": 0.001,  "investigation_avg_usd": 0.0467,
+     "precheck_avg_tokens": 1100,        "investigation_avg_tokens": 8500},
+    {"type": "FX limit breach",         "precheck_avg_usd": 0.0013, "investigation_avg_usd": 0.1033,
+     "precheck_avg_tokens": 1200,        "investigation_avg_tokens": 19000},
 ]
 
 

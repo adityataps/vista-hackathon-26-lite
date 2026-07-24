@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getExceptions, getInvestigationReport, streamLiveInvestigation, submitDecision, sendChat } from '../api/client.js';
+import { apiUrl, getExceptions, getInvestigationReport, streamLiveInvestigation, submitDecision, sendChat } from '../api/client.js';
 
 function Md({ children }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>;
@@ -422,7 +422,7 @@ export default function ExceptionQueue() {
               {report?.report_id && (
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <a
-                    href={`/api/reports/${report.report_id}/pdf`}
+                    href={apiUrl(`/api/reports/${report.report_id}/pdf`)}
                     download={`${report.report_id}.pdf`}
                     className="btn"
                     style={{ fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}

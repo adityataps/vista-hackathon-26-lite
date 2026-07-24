@@ -24,7 +24,7 @@ _client: Any = None
 
 _MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID",
-    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 )
 _GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
 _GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "1")
@@ -35,7 +35,7 @@ def _bedrock():
     if _client is None:
         _client = boto3.client(
             "bedrock-runtime",
-            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
         )
     return _client
 
@@ -78,7 +78,6 @@ def converse(
 
     text = next((b["text"] for b in content if b.get("type") == "text"), "")
 
-    # Log the guardrail trace for the Responsible AI audit trail
     trace = response.get("trace", {}).get("guardrail")
     if trace:
         logger.info("guardrail_trace stop_reason=%s trace=%s", stop_reason, json.dumps(trace))

@@ -2,11 +2,18 @@ import logging
 import os
 
 import psycopg2
+from pgvector.psycopg2 import register_vector
 
 logger = logging.getLogger(__name__)
 
 _db_conn = None
 _schema_done = False
+
+
+def _connect_db():
+    conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=30)
+    register_vector(conn)
+    return conn
 
 
 def get_db():
@@ -15,25 +22,18 @@ def get_db():
         return None
     try:
         if _db_conn is None or _db_conn.closed:
-            _db_conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+            _db_conn = _connect_db()
             _schema_done = False
         else:
-            # Any failed query anywhere in the app leaves psycopg2's singleton
-            # connection in an aborted-transaction state.  Rolling back here
-            # clears that state before the caller touches the connection.
-            # rollback() is a no-op when the connection is already idle.
             try:
                 _db_conn.rollback()
             except Exception:
-                # Connection is unrecoverable — drop and reconnect.
                 try:
                     _db_conn.close()
                 except Exception:
                     pass
-                _db_conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+                _db_conn = _connect_db()
                 _schema_done = False
-        # Run schema migration on first connection, and retry on every call until
-        # all tables are confirmed created (individual failures are swallowed inside).
         if not _schema_done:
             _ensure_schema(_db_conn)
             _schema_done = True
@@ -44,8 +44,6 @@ def get_db():
 
 
 def _ensure_schema(conn):
-    # Use autocommit so each DDL statement is its own transaction.
-    # Wrap each in try/except so a lock-timeout on one table never blocks the rest.
     old_autocommit = conn.autocommit
     conn.autocommit = True
 
@@ -53,10 +51,11 @@ def _ensure_schema(conn):
         try:
             with conn.cursor() as cur:
                 cur.execute(stmt)
-        except Exception as e:
-            logger.debug("Schema stmt skipped (%s): %.60s", type(e).__name__, stmt.strip()[:60])
+        except Exception as exc:
+            logger.debug("Schema stmt skipped (%s): %.60s", type(exc).__name__, stmt.strip()[:60])
 
     _run("SET lock_timeout = '5s'")
+    _run("CREATE EXTENSION IF NOT EXISTS vector")
 
     _run("""
         CREATE TABLE IF NOT EXISTS payment_events (
@@ -141,7 +140,6 @@ def _ensure_schema(conn):
     _run("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0")
     _run("ALTER TABLE investigations ADD COLUMN IF NOT EXISTS report_content JSONB")
 
-    # Incremental step table for live SSE streaming
     _run("""
         CREATE TABLE IF NOT EXISTS investigation_steps (
             id        SERIAL PRIMARY KEY,
@@ -154,5 +152,22 @@ def _ensure_schema(conn):
         )
     """)
     _run("CREATE INDEX IF NOT EXISTS idx_inv_steps ON investigation_steps(inv_id, seq)")
+
+    _run("""
+        CREATE TABLE IF NOT EXISTS kb_chunks (
+            id          SERIAL PRIMARY KEY,
+            doc_name    TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_text  TEXT NOT NULL,
+            embedding   vector(1024) NOT NULL,
+            created_at  TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (doc_name, chunk_index)
+        )
+    """)
+    _run("CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc_name ON kb_chunks(doc_name)")
+    _run(
+        "CREATE INDEX IF NOT EXISTS idx_kb_chunks_embedding "
+        "ON kb_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 8)"
+    )
 
     conn.autocommit = old_autocommit
