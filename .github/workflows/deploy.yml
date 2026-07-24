@@ -3,6 +3,7 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
@@ -20,13 +21,14 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      ingest: ${{ steps.filter.outputs.ingest }}
-      backend: ${{ steps.filter.outputs.backend }}
-      frontend: ${{ steps.filter.outputs.frontend }}
+      ingest: ${{ steps.flags.outputs.ingest }}
+      backend: ${{ steps.flags.outputs.backend }}
+      frontend: ${{ steps.flags.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
+        if: github.event_name != 'workflow_dispatch'
         with:
           filters: |
             ingest:
@@ -38,10 +40,53 @@ jobs:
             frontend:
               - 'frontend/**'
 
+      - name: Resolve changed components
+        id: flags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FILTER_INGEST: ${{ steps.filter.outputs.ingest }}
+          FILTER_BACKEND: ${{ steps.filter.outputs.backend }}
+          FILTER_FRONTEND: ${{ steps.filter.outputs.frontend }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "ingest=true" >> "$GITHUB_OUTPUT"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ingest=${FILTER_INGEST}" >> "$GITHUB_OUTPUT"
+            echo "backend=${FILTER_BACKEND}" >> "$GITHUB_OUTPUT"
+            echo "frontend=${FILTER_FRONTEND}" >> "$GITHUB_OUTPUT"
+          fi
+
+  test-backend:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run backend tests
+        working-directory: backend
+        run: pytest
+
   deploy-ingest:
     needs: changes
-    if: needs.changes.outputs.ingest == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.ingest == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-ingest-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -76,9 +121,12 @@ jobs:
             --region $AWS_REGION
 
   deploy-backend:
-    needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    needs: [changes, test-backend]
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-backend-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -115,8 +163,11 @@ jobs:
 
   deploy-frontend:
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-frontend-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
