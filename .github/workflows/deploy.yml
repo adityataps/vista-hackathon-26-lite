@@ -60,7 +60,9 @@ jobs:
 
   test-backend:
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
+    if: |
+      needs.changes.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +84,9 @@ jobs:
 
   deploy-ingest:
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.ingest == 'true'
+    if: |
+      needs.changes.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ingest == 'true')
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-ingest-${{ github.ref }}
@@ -122,7 +126,10 @@ jobs:
 
   deploy-backend:
     needs: [changes, test-backend]
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
+    if: |
+      needs.changes.result == 'success' &&
+      needs.test-backend.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true')
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-backend-${{ github.ref }}
@@ -163,7 +170,9 @@ jobs:
 
   deploy-frontend:
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
+    if: |
+      needs.changes.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true')
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-frontend-${{ github.ref }}
