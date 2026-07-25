@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import uuid
 import defusedxml.ElementTree as ET
 from dotenv import load_dotenv
 
@@ -17,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from bedrock_guard import BEDROCK_LIMIT_MESSAGE, BedrockDailyLimitExceeded
-from db import get_db, _ensure_schema
+from db import get_db, _ensure_schema, try_acquire_job_lock, release_job_lock
 from pacs008_generator.generator import generate_batch
 from routers.exceptions import router as exceptions_router
 from routers.resolutions import router as resolutions_router
@@ -193,6 +194,27 @@ _auto_investigate_queue: asyncio.Queue = asyncio.Queue()
 _queued_prechecks: set[str] = set()
 _queued_investigations: set[str] = set()
 
+# Unique per-process id used to hold the cross-container job lock (see
+# db.try_acquire_job_lock). Each Lambda execution environment gets its own
+# workers, so this identifies which one currently "owns" the single global
+# job slot.
+_JOB_HOLDER_ID = f"pid{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
+async def _run_with_job_lock(coro_fn, *args) -> None:
+    """Run coro_fn(*args) only after acquiring the global job lock, so at
+    most one precheck/investigation runs at a time across every concurrent
+    Lambda container. Waits (with backoff) if another container holds it."""
+    conn = get_db()
+    delay = 1.0
+    while not try_acquire_job_lock(conn, _JOB_HOLDER_ID):
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, 5.0)
+    try:
+        await coro_fn(*args)
+    finally:
+        release_job_lock(conn, _JOB_HOLDER_ID)
+
 
 def _enqueue_precheck(msg_id: str) -> None:
     if msg_id and msg_id not in _queued_prechecks:
@@ -353,7 +375,7 @@ async def _precheck_worker() -> None:
     while True:
         tx_id = await _precheck_queue.get()
         try:
-            await _run_precheck(tx_id)
+            await _run_with_job_lock(_run_precheck, tx_id)
         except Exception as exc:
             logger.error("Pre-check failed for %s: %s", tx_id, exc)
         finally:
@@ -609,7 +631,7 @@ async def _auto_investigate_worker() -> None:
     while True:
         tx_id = await _auto_investigate_queue.get()
         try:
-            await _run_full_investigation_bg(tx_id)
+            await _run_with_job_lock(_run_full_investigation_bg, tx_id)
         except Exception as exc:
             logger.error("Auto-investigation error for %s: %s", tx_id, exc)
         finally:
