@@ -13,7 +13,7 @@ variable "app_name" {
 variable "bedrock_daily_limit" {
   description = "Soft per-day cap for all Bedrock invocations made by the backend Lambda (chat + embeddings)."
   type        = number
-  default     = 100
+  default     = 400
 }
 
 variable "budget_alert_email" {

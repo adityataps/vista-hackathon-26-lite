@@ -414,5 +414,66 @@ def _ensure_schema(conn) -> bool:
         )
     """)
 
+    # Singleton row used as a global mutex (see try_acquire_job_lock below) so
+    # that only one precheck/investigation job runs at a time across every
+    # concurrent Lambda container.
+    _run("""
+        CREATE TABLE IF NOT EXISTS job_lock (
+            id SERIAL PRIMARY KEY,
+            holder TEXT,
+            locked_at TIMESTAMPTZ
+        )
+    """)
+    _run("INSERT INTO job_lock (id, holder, locked_at) VALUES (1, NULL, NULL) ON CONFLICT (id) DO NOTHING")
+
     conn.autocommit = old_autocommit
     return all_ok
+
+
+def try_acquire_job_lock(conn, holder: str, stale_after_seconds: int = 180) -> bool:
+    """Best-effort global mutex so only one background job (precheck or
+    investigation) runs at a time across all Lambda containers. Each
+    container gets its own independent asyncio workers, so without this a
+    burst of concurrent cold starts can fire many prechecks/investigations
+    at once and overwhelm the tiny Aurora Serverless v2 cluster + Bedrock.
+
+    Implemented as an atomic UPDATE...RETURNING on a singleton row rather
+    than a Postgres advisory lock, since the RDS Data API doesn't guarantee
+    a pinned session outside an explicit transaction. `stale_after_seconds`
+    auto-recovers the lock if a holder crashed/timed out without releasing.
+
+    Fails open (returns True) if there's no DB connection or the lock query
+    itself errors — a broken lock should never permanently wedge the whole
+    investigation pipeline, it should just fall back to unserialized runs.
+    """
+    if not conn:
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                UPDATE job_lock
+                SET holder = %s, locked_at = NOW()
+                WHERE id = 1
+                  AND (holder IS NULL OR locked_at < NOW() - INTERVAL '{int(stale_after_seconds)} seconds')
+                RETURNING id
+            """, (holder,))
+            acquired = cur.fetchone() is not None
+        conn.commit()
+        return acquired
+    except Exception as exc:
+        logger.warning("Job lock acquire failed, proceeding without lock: %s", exc)
+        return True
+
+
+def release_job_lock(conn, holder: str) -> None:
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE job_lock SET holder = NULL, locked_at = NULL WHERE id = 1 AND holder = %s",
+                (holder,),
+            )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("Job lock release failed: %s", exc)
