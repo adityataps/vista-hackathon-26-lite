@@ -53,7 +53,11 @@ resource "aws_s3_object" "reference_data" {
 }
 
 resource "aws_s3_bucket" "frontend" {
-  bucket        = "${var.app_name}-frontend-${data.aws_caller_identity.current.account_id}"
+  # S3 static-website hosting requires the bucket name to exactly match the
+  # custom domain when served behind a DNS CNAME (S3 routes website-endpoint
+  # requests to a bucket using the Host header) — so this must be the bare
+  # custom domain, not an account-scoped name.
+  bucket        = var.custom_domain
   force_destroy = true
 }
 

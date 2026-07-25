@@ -39,3 +39,21 @@ variable "langsmith_project" {
   type        = string
   default     = "payinvestigator"
 }
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token (DNS edit scope) for managing the vistahack26.tapshalkar.com record. Pass via TF_VAR_cloudflare_api_token env var, never commit to tfvars."
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone ID for tapshalkar.com."
+  type        = string
+  default     = "9a2b68936aec95fc2ad33a144cec981a"
+}
+
+variable "custom_domain" {
+  description = "Custom subdomain the frontend is served from, proxied through Cloudflare."
+  type        = string
+  default     = "vistahack26.tapshalkar.com"
+}
