@@ -91,9 +91,11 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="conn" title="Backend connectivity">
-          <span className={`dot ${backendLive ? 'live' : 'mock'}`} />
-          {backendLive === null ? 'Connecting…' : backendLive ? 'Backend live' : 'Demo mode (mock data)'}
+        <div className="conn" title="Backend connectivity — lite deployment can take up to ~45s to wake from a cold start">
+          {backendLive === null
+            ? <span className="spinner" style={{ marginRight: 2 }} />
+            : <span className={`dot ${backendLive ? 'live' : 'mock'}`} />}
+          {backendLive === null ? 'Waking up backend…' : backendLive ? 'Backend live' : 'Demo mode (mock data)'}
         </div>
         <button
           className="btn primary"
