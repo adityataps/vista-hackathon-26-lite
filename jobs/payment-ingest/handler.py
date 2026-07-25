@@ -344,6 +344,16 @@ def _parse_pacs008(xml_content):
     instd_amt = Decimal(instd_amt_el.text.strip()) if instd_amt_el is not None and instd_amt_el.text else None
     instd_amt_ccy = instd_amt_el.get('Ccy') if instd_amt_el is not None else None
 
+    settlement_date_text = tx(f'{tx_path}/{p}IntrBkSttlmDt')
+    try:
+        settlement_date = date.fromisoformat(settlement_date_text) if settlement_date_text else None
+    except ValueError:
+        # Malformed/unexpected date format in the source XML (e.g. a
+        # deliberately-injected error case) - leave NULL rather than fail
+        # the whole ingest; the Data API requires a real `date` object
+        # (not a string) to bind against the `settlement_date DATE` column.
+        settlement_date = None
+
     return {
         'msg_id':         tx(f'.//{h}BizMsgIdr'),
         'uetr':           tx(f'{pmt_id}/{p}UETR'),
@@ -354,7 +364,7 @@ def _parse_pacs008(xml_content):
         'instd_amt':      instd_amt,
         'instd_amt_ccy':  instd_amt_ccy,
         'xchg_rate':      tx(f'{tx_path}/{p}XchgRate'),
-        'settlement_date': tx(f'{tx_path}/{p}IntrBkSttlmDt'),
+        'settlement_date': settlement_date,
         'sender_bic':     tx(f'.//{h}Fr/{h}FIId/{h}FinInstnId/{h}BICFI'),
         'receiver_bic':   tx(f'.//{h}To/{h}FIId/{h}FinInstnId/{h}BICFI'),
         'debtor_bic':     tx(f'{tx_path}/{p}DbtrAgt/{p}FinInstnId/{p}BICFI'),

@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "mockdata" {
-  bucket        = "${var.app_name}-mockdata-${data.aws_caller_identity.current.account_id}"
+  bucket        = "${var.app_name}-mockdata-lite-${data.aws_caller_identity.current.account_id}"
   force_destroy = true
 }
 
@@ -13,7 +13,7 @@ resource "aws_s3_bucket_public_access_block" "mockdata" {
 }
 
 resource "aws_s3_bucket" "knowledge_base" {
-  bucket        = "${var.app_name}-kb-${data.aws_caller_identity.current.account_id}"
+  bucket        = "${var.app_name}-kb-lite-${data.aws_caller_identity.current.account_id}"
   force_destroy = true
 }
 
@@ -34,6 +34,22 @@ resource "aws_s3_object" "knowledge_base_docs" {
   source       = "${path.module}/assets/${each.value}"
   source_hash  = filemd5("${path.module}/assets/${each.value}")
   content_type = "text/markdown"
+}
+
+# Reference data consumed by the ingest Lambda's error-detection rules
+# (see jobs/payment-ingest/reference_data.py + error_rules.py). Without these,
+# the BIC_UNKNOWN/SANCTIONS_NAME_HIT/ACCOUNT_CLOSED checks are silently
+# skipped. watchlist.json must stay in sync with WATCHLIST_NAMES in
+# jobs/pacs008-generator/pacs008_generator/errors.py so seeded "faulty"
+# payments are actually detected as faulty on ingest.
+resource "aws_s3_object" "reference_data" {
+  for_each = fileset("${path.module}/reference-data", "*.json")
+
+  bucket       = aws_s3_bucket.mockdata.id
+  key          = "reference/${each.value}"
+  source       = "${path.module}/reference-data/${each.value}"
+  source_hash  = filemd5("${path.module}/reference-data/${each.value}")
+  content_type = "application/json"
 }
 
 resource "aws_s3_bucket" "frontend" {

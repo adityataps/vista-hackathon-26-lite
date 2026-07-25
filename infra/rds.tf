@@ -16,7 +16,7 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_rds_cluster" "main" {
   cluster_identifier              = "${var.app_name}-aurora"
   engine                          = "aurora-postgresql"
-  engine_version                  = "16.3"
+  engine_version                  = "16.11"
   engine_mode                     = "provisioned"
   enable_http_endpoint            = true
   database_name                   = local.db_name
