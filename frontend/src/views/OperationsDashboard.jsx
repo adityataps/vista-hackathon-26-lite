@@ -35,7 +35,14 @@ export default function OperationsDashboard() {
     getAiStats().then(({ data }) => setAi(data));
   }, []);
 
-  if (!kpis) return <div className="card">Loading…</div>;
+  if (!kpis) {
+    return (
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span className="spinner" />
+        Waking up backend… lite deployments can take up to ~45s on the first request
+      </div>
+    );
+  }
 
   return (
     <>

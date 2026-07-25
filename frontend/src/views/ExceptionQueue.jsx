@@ -62,6 +62,7 @@ function settlementCell(iso) {
 
 export default function ExceptionQueue() {
   const [queue, setQueue] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [lines, setLines] = useState([]);
   const [running, setRunning] = useState(false);
@@ -176,6 +177,7 @@ export default function ExceptionQueue() {
 
   function fetchQueue() {
     return getExceptions('active').then(({ data, source }) => {
+      setQueueLoading(false);
       if (source === 'mock') {
         // On transient DB failures, keep showing the last real data rather than
         // replacing it with the static mock fallback.
@@ -412,7 +414,13 @@ export default function ExceptionQueue() {
               {filteredQueue.length === 0 && queue.length > 0 && (
                 <tr><td colSpan={8} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No results match current filter</td></tr>
               )}
-              {queue.length === 0 && (
+              {queue.length === 0 && queueLoading && (
+                <tr><td colSpan={8} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>
+                  <span className="spinner" style={{ marginRight: 8 }} />
+                  Waking up backend… lite deployments can take up to ~45s on the first request
+                </td></tr>
+              )}
+              {queue.length === 0 && !queueLoading && (
                 <tr><td colSpan={8} style={{ textAlign: 'center', color: '#8fa1c0', padding: 20 }}>No active exceptions</td></tr>
               )}
             </tbody>

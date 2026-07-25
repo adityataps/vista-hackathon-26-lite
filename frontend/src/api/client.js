@@ -202,7 +202,9 @@ export const getHeatmap = () => getJson('/api/monitoring/heatmap', mock.heatmap)
 
 export async function probeBackend() {
   try {
-    await apiFetch('/api/metrics/kpis', { timeout: 2500 });
+    // Use the full API_TIMEOUT_MS here (not a short override) so a genuinely
+    // live-but-cold-starting backend isn't mistaken for an offline one.
+    await apiFetch('/api/metrics/kpis');
     return true;
   } catch {
     return false;
