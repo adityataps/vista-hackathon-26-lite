@@ -12,6 +12,7 @@ env:
   ECR_INGEST_REPO: payinvestigator-ingest
   LAMBDA_BACKEND_NAME: payinvestigator-backend
   LAMBDA_INGEST_NAME: payinvestigator-payment-xml-ingest
+  FRONTEND_BUCKET: vistahack26.tapshalkar.com
 
 permissions:
   id-token: write
@@ -197,7 +198,7 @@ jobs:
         id: runtime
         run: |
           echo "api_base_url=$(aws lambda get-function-url-config --function-name $LAMBDA_BACKEND_NAME --query FunctionUrl --output text --region $AWS_REGION)" >> $GITHUB_OUTPUT
-          echo "bucket=$APP_NAME-frontend-${{ secrets.AWS_ACCOUNT_ID }}" >> $GITHUB_OUTPUT
+          echo "bucket=$FRONTEND_BUCKET" >> $GITHUB_OUTPUT
 
       - name: Install frontend dependencies
         working-directory: frontend
