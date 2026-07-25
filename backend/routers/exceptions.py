@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from bedrock_guard import BEDROCK_LIMIT_MESSAGE, BedrockDailyLimitExceeded
 from db import get_db
 
 logger = logging.getLogger(__name__)
@@ -130,13 +131,13 @@ def ingest_exception(req: IngestExceptionRequest):
                 detected_errors = EXCLUDED.detected_errors,
                 updated_at = NOW()
             RETURNING id
-        """, (req.msg_id, req.uetr, json.dumps(req.detected_errors), req.payment_id))
+        """, (req.msg_id, req.uetr, req.detected_errors, req.payment_id))
         exception_id = cur.fetchone()[0]
     conn.commit()
     logger.info("Exception created/updated: id=%s msg_id=%s", exception_id, req.msg_id)
 
-    from main import _precheck_queue
-    _precheck_queue.put_nowait(req.msg_id)
+    from main import _enqueue_precheck
+    _enqueue_precheck(req.msg_id)
 
     return {"exception_id": exception_id}
 
@@ -276,33 +277,67 @@ async def investigate(tx_id: str):
         total_output_tokens = 0
 
         # Wrap the async generator so we can emit SSE keepalive comments every
-        # 15 s of silence — without these the ALB idle_timeout kills the
-        # connection mid-investigation (NS_ERROR_NET_PARTIAL_TRANSFER).
+        # 15 s of silence — without these some clients/intermediaries treat a
+        # long-running streamed investigation as a stalled connection.
         aiter = graph.astream_events(initial_state, version="v2").__aiter__()
-        while True:
-            try:
-                event = await asyncio.wait_for(aiter.__anext__(), timeout=15.0)
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
-                continue
-            except StopAsyncIteration:
-                break
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(aiter.__anext__(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                except StopAsyncIteration:
+                    break
 
-            sse = _normalize_lg_event(event)
-            if sse:
-                accumulated_steps.append({**sse, "ts": datetime.now(timezone.utc).isoformat()})
-                yield f"data: {json.dumps(sse)}\n\n"
+                sse = _normalize_lg_event(event)
+                if sse:
+                    accumulated_steps.append({**sse, "ts": datetime.now(timezone.utc).isoformat()})
+                    yield f"data: {json.dumps(sse)}\n\n"
 
-            if event.get("event") == "on_chat_model_end":
-                output = event.get("data", {}).get("output")
-                if output is not None:
-                    meta = getattr(output, "usage_metadata", None)
-                    if isinstance(meta, dict):
-                        total_input_tokens += meta.get("input_tokens", 0)
-                        total_output_tokens += meta.get("output_tokens", 0)
+                if event.get("event") == "on_chat_model_end":
+                    output = event.get("data", {}).get("output")
+                    if output is not None:
+                        meta = getattr(output, "usage_metadata", None)
+                        if isinstance(meta, dict):
+                            total_input_tokens += meta.get("input_tokens", 0)
+                            total_output_tokens += meta.get("output_tokens", 0)
 
-            if event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
-                final_state = event.get("data", {}).get("output", {})
+                if event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
+                    final_state = event.get("data", {}).get("output", {})
+        except BedrockDailyLimitExceeded as exc:
+            limit_step = {
+                "agent": "System",
+                "cls": "resolution",
+                "text": BEDROCK_LIMIT_MESSAGE,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+            accumulated_steps.append(limit_step)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE investigations
+                    SET steps=%s, approval_status='limit_reached',
+                        input_tokens=%s, output_tokens=%s
+                    WHERE id=%s
+                """, (accumulated_steps, total_input_tokens, total_output_tokens, inv_id))
+                cur.execute("""
+                    UPDATE exceptions
+                    SET status='limit_reached',
+                        recommendation=%s,
+                        recommended_sql=NULL,
+                        updated_at=NOW()
+                    WHERE id=%s
+                """, ({
+                    "action": "Pause AI investigation until the daily limit resets.",
+                    "rationale": BEDROCK_LIMIT_MESSAGE,
+                    "confidence": 1.0,
+                    "requires_human_approval": True,
+                    "call_count": exc.call_count,
+                }, exc_id))
+            conn.commit()
+            yield f"data: {json.dumps({'agent': 'System', 'cls': 'resolution', 'text': BEDROCK_LIMIT_MESSAGE})}\n\n"
+            yield f"data: {json.dumps({'type': 'limit_reached', 'message': BEDROCK_LIMIT_MESSAGE})}\n\n"
+            return
 
         recommendation = final_state.get("recommendation") or {}
         recommended_sql = recommendation.get("sql", None)
@@ -316,15 +351,15 @@ async def investigate(tx_id: str):
                     input_tokens=%s, output_tokens=%s, report_content=%s
                 WHERE id=%s
             """, (
-                json.dumps(accumulated_steps),
-                json.dumps({
+                accumulated_steps,
+                {
                     "technical": final_state.get("technical_findings"),
                     "compliance": final_state.get("compliance_findings"),
-                }),
-                json.dumps(recommendation),
+                },
+                recommendation,
                 total_input_tokens,
                 total_output_tokens,
-                json.dumps(report_content) if report_content else None,
+                report_content if report_content else None,
                 inv_id,
             ))
             # Also populate the recommendation and recommended_sql in the exceptions table
@@ -335,7 +370,7 @@ async def investigate(tx_id: str):
                     recommended_sql=%s
                 WHERE id=%s
             """, (
-                json.dumps(recommendation),
+                recommendation,
                 recommended_sql,
                 exc_id,
             ))
@@ -385,7 +420,7 @@ async def stream_live_investigation(tx_id: str):
         for _ in range(30):
             with conn.cursor() as cur:
                 cur.execute(f"""
-                    SELECT i.id
+                    SELECT i.id, e.status
                     FROM exceptions e
                     LEFT JOIN payments p ON p.msg_id = e.msg_id
                     LEFT JOIN LATERAL (
@@ -396,6 +431,10 @@ async def stream_live_investigation(tx_id: str):
                     WHERE {id_clause}
                 """, (id_val,))
                 row = cur.fetchone()
+            if row and row[1] == "limit_reached":
+                yield f"data: {json.dumps({'agent': 'System', 'cls': 'resolution', 'text': BEDROCK_LIMIT_MESSAGE})}\n\n"
+                yield f"data: {json.dumps({'type': 'limit_reached', 'message': BEDROCK_LIMIT_MESSAGE})}\n\n"
+                return
             if row and row[0] is not None:
                 inv_id = row[0]
                 break
@@ -424,10 +463,20 @@ async def stream_live_investigation(tx_id: str):
             # Check whether the investigation has completed
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT completed_at, recommendation FROM investigations WHERE id = %s",
+                    """
+                    SELECT i.completed_at, i.recommendation, e.status
+                    FROM investigations i
+                    JOIN exceptions e ON e.id = i.exception_id
+                    WHERE i.id = %s
+                    """,
                     (inv_id,),
                 )
                 inv_row = cur.fetchone()
+
+            if inv_row and inv_row[2] == "limit_reached":
+                yield f"data: {json.dumps({'agent': 'System', 'cls': 'resolution', 'text': BEDROCK_LIMIT_MESSAGE})}\n\n"
+                yield f"data: {json.dumps({'type': 'limit_reached', 'message': BEDROCK_LIMIT_MESSAGE})}\n\n"
+                return
 
             if inv_row and inv_row[0] is not None:
                 rec = inv_row[1] or {}

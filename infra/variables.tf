@@ -1,5 +1,5 @@
 variable "region" {
-  default = "us-west-2"
+  default = "us-east-1"
 }
 
 variable "aws_profile" {
@@ -10,22 +10,15 @@ variable "app_name" {
   default = "payinvestigator"
 }
 
-variable "domain" {
-  default = "vistahack26.tapshalkar.com"
+variable "bedrock_daily_limit" {
+  description = "Soft per-day cap for all Bedrock invocations made by the backend Lambda (chat + embeddings)."
+  type        = number
+  default     = 100
 }
 
-variable "cloudflare_zone_id" {
-  default = "9a2b68936aec95fc2ad33a144cec981a"
-}
-
-variable "cloudflare_api_token" {
-  sensitive = true
-}
-
-variable "backend_url" {
-  description = "HTTPS URL of the PayInvestigator backend (ALB)"
+variable "budget_alert_email" {
+  description = "Email address subscribed to the Bedrock budget alert SNS topic. Required before first apply."
   type        = string
-  default     = ""
 }
 
 variable "error_notify_endpoint_url" {

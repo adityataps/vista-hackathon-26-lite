@@ -1,24 +1,22 @@
 import os
 
 from langchain_aws import ChatBedrockConverse as ChatBedrock
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 
-from agents.state import InvestigationState
+from bedrock_guard import wrap_bedrock_llm
+from agents.nodes.compliance import compliance_node
+from agents.nodes.dispatch import dispatch_node
 from agents.nodes.intake import intake_node
 from agents.nodes.investigate import investigate_node
-from agents.nodes.dispatch import dispatch_node
-from agents.nodes.technical import technical_node
-from agents.nodes.compliance import compliance_node
-from agents.nodes.resolution import resolution_node
 from agents.nodes.report import report_node
+from agents.nodes.resolution import resolution_node
+from agents.nodes.technical import technical_node
+from agents.state import InvestigationState
 
 
 def build_graph(llm: ChatBedrock):
     builder = StateGraph(InvestigationState)
 
-    # Bind llm into each node via async closures so LangGraph detects them as
-    # coroutine functions and awaits them — sync lambdas cause run_in_executor to
-    # return the coroutine unawaited, breaking the state-write step.
     async def _intake(s): return await intake_node(s, llm)
     async def _investigate(s): return await investigate_node(s, llm)
     async def _technical(s): return await technical_node(s, llm)
@@ -35,7 +33,6 @@ def build_graph(llm: ChatBedrock):
 
     builder.add_edge(START, "intake")
     builder.add_edge("intake", "investigate")
-    # dispatch_node returns list[Send] — used directly as routing function (NOT registered as a node)
     builder.add_conditional_edges("investigate", dispatch_node)
     builder.add_edge("technical", "resolution")
     builder.add_edge("compliance", "resolution")
@@ -46,10 +43,12 @@ def build_graph(llm: ChatBedrock):
 
 
 def make_llm() -> ChatBedrock:
-    return ChatBedrock(
-        model_id=os.environ.get(
-            "BEDROCK_MODEL_ID",
-            "us.anthropic.claude-sonnet-4-6",
-        ),
-        region_name=os.environ.get("AWS_REGION", "us-west-2"),
+    return wrap_bedrock_llm(
+        ChatBedrock(
+            model_id=os.environ.get(
+                "BEDROCK_MODEL_ID",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            ),
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
     )

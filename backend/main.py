@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from bedrock_guard import BEDROCK_LIMIT_MESSAGE, BedrockDailyLimitExceeded
 from db import get_db, _ensure_schema
 from pacs008_generator.generator import generate_batch
 from routers.exceptions import router as exceptions_router
@@ -109,10 +110,10 @@ def _seed_write_db(conn, messages: list, s3_prefix: str):
                     ON CONFLICT (msg_id) DO UPDATE SET
                         detected_errors = EXCLUDED.detected_errors,
                         updated_at = NOW()
-                """, (msg["msg_id"], msg["uetr"], json.dumps(detected), payment_id))
+                """, (msg["msg_id"], msg["uetr"], detected, payment_id))
         conn.commit()
         if msg["is_faulty"]:
-            _precheck_queue.put_nowait(msg["msg_id"])
+            _enqueue_precheck(msg["msg_id"])
 
 
 def _write_events(conn, messages):
@@ -160,9 +161,9 @@ async def lifespan(app: FastAPI):
         conn.commit()
         for msg_id, precheck_summary in rows:
             if precheck_summary:
-                _auto_investigate_queue.put_nowait(msg_id)
+                _enqueue_auto_investigate(msg_id)
             else:
-                _precheck_queue.put_nowait(msg_id)
+                _enqueue_precheck(msg_id)
         if rows:
             logger.info(
                 "Startup: enqueued %d exceptions (%d need precheck)",
@@ -172,8 +173,9 @@ async def lifespan(app: FastAPI):
 
     precheck_worker = asyncio.create_task(_precheck_worker())
     auto_investigate_worker = asyncio.create_task(_auto_investigate_worker())
+    pending_exception_scanner = asyncio.create_task(_pending_exception_scanner())
     yield
-    for task in (precheck_worker, auto_investigate_worker):
+    for task in (precheck_worker, auto_investigate_worker, pending_exception_scanner):
         task.cancel()
         try:
             await task
@@ -188,6 +190,20 @@ _investigation_graph = None
 
 _precheck_queue: asyncio.Queue = asyncio.Queue()
 _auto_investigate_queue: asyncio.Queue = asyncio.Queue()
+_queued_prechecks: set[str] = set()
+_queued_investigations: set[str] = set()
+
+
+def _enqueue_precheck(msg_id: str) -> None:
+    if msg_id and msg_id not in _queued_prechecks:
+        _queued_prechecks.add(msg_id)
+        _precheck_queue.put_nowait(msg_id)
+
+
+def _enqueue_auto_investigate(msg_id: str) -> None:
+    if msg_id and msg_id not in _queued_investigations:
+        _queued_investigations.add(msg_id)
+        _auto_investigate_queue.put_nowait(msg_id)
 
 
 def get_graph():
@@ -293,15 +309,35 @@ async def _run_precheck(tx_id: str) -> None:
                     updated_at=NOW()
                 WHERE id=%s
             """, (
-                json.dumps(precheck_summary),
+                precheck_summary,
                 usage.get("input_tokens", 0),
                 usage.get("output_tokens", 0),
                 exc_id,
             ))
         conn.commit()
         logger.info("Pre-check done: %s → %s", tx_id, precheck_summary.get("action_hint", "")[:80])
-        _auto_investigate_queue.put_nowait(tx_id)
+        _enqueue_auto_investigate(tx_id)
 
+    except BedrockDailyLimitExceeded as exc:
+        precheck_summary = {
+            "needs_technical": False,
+            "needs_compliance": False,
+            "action_hint": BEDROCK_LIMIT_MESSAGE,
+            "error_categories": ["bedrock_limit"],
+            "call_count": exc.call_count,
+        }
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE exceptions
+                SET status='limit_reached',
+                    precheck_summary=%s,
+                    precheck_input_tokens=0,
+                    precheck_output_tokens=0,
+                    updated_at=NOW()
+                WHERE id=%s
+            """, (precheck_summary, exc_id))
+        conn.commit()
+        logger.warning("Pre-check halted by Bedrock daily limit for %s", tx_id)
     except Exception:
         with conn.cursor() as cur:
             cur.execute(
@@ -321,7 +357,32 @@ async def _precheck_worker() -> None:
         except Exception as exc:
             logger.error("Pre-check failed for %s: %s", tx_id, exc)
         finally:
+            _queued_prechecks.discard(tx_id)
             _precheck_queue.task_done()
+
+
+async def _pending_exception_scanner() -> None:
+    """Detect exceptions inserted directly into the DB and enqueue pre-checks."""
+    while True:
+        await asyncio.sleep(10)
+        conn = get_db()
+        if not conn:
+            continue
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT msg_id
+                    FROM exceptions
+                    WHERE status = 'pending'
+                      AND precheck_summary IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT 50
+                """)
+                rows = cur.fetchall()
+            for (msg_id,) in rows:
+                _enqueue_precheck(msg_id)
+        except Exception as exc:
+            logger.debug("Pending exception scan skipped: %s", exc)
 
 
 async def _run_full_investigation_bg(tx_id: str) -> None:
@@ -476,23 +537,58 @@ async def _run_full_investigation_bg(tx_id: str) -> None:
                     input_tokens=%s, output_tokens=%s, report_content=%s
                 WHERE id=%s
             """, (
-                json.dumps(accumulated_steps),
-                json.dumps({
+                accumulated_steps,
+                {
                     "technical": final_state.get("technical_findings"),
                     "compliance": final_state.get("compliance_findings"),
-                }),
-                json.dumps(recommendation),
+                },
+                recommendation,
                 total_input_tokens, total_output_tokens,
-                json.dumps(report_content) if report_content else None,
+                report_content if report_content else None,
                 inv_id,
             ))
             cur.execute("""
                 UPDATE exceptions SET status='awaiting_approval', recommendation=%s,
                     recommended_sql=%s WHERE id=%s
-            """, (json.dumps(recommendation), recommendation.get("sql"), exc_id))
+            """, (recommendation, recommendation.get("sql"), exc_id))
         conn.commit()
         logger.info("Auto-investigation complete: %s (inv=%d)", tx_id, inv_id)
 
+    except BedrockDailyLimitExceeded as exc:
+        _inc_flush()
+        limit_step = {
+            "agent": "System",
+            "cls": "resolution",
+            "text": BEDROCK_LIMIT_MESSAGE,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        accumulated_steps.append(limit_step)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO investigation_steps (inv_id, seq, agent, cls, step_text) VALUES (%s,%s,%s,%s,%s)",
+                (inv_id, _inc_seq, limit_step["agent"], limit_step["cls"], limit_step["text"]),
+            )
+            cur.execute("""
+                UPDATE investigations
+                SET steps=%s, approval_status='limit_reached',
+                    input_tokens=%s, output_tokens=%s
+                WHERE id=%s
+            """, (accumulated_steps, total_input_tokens, total_output_tokens, inv_id))
+            cur.execute("""
+                UPDATE exceptions
+                SET status='limit_reached',
+                    recommendation=%s,
+                    recommended_sql=NULL,
+                    updated_at=NOW()
+                WHERE id=%s
+            """, ({
+                "action": "Pause AI investigation until the daily limit resets.",
+                "rationale": BEDROCK_LIMIT_MESSAGE,
+                "confidence": 1.0,
+                "requires_human_approval": True,
+            }, exc_id))
+        conn.commit()
+        logger.warning("Auto-investigation halted by Bedrock daily limit for %s", tx_id)
     except Exception as exc:
         try:
             conn.rollback()  # clear any aborted transaction before attempting status reset
@@ -517,6 +613,7 @@ async def _auto_investigate_worker() -> None:
         except Exception as exc:
             logger.error("Auto-investigation error for %s: %s", tx_id, exc)
         finally:
+            _queued_investigations.discard(tx_id)
             _auto_investigate_queue.task_done()
 
 

@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
+from bedrock_guard import BEDROCK_LIMIT_MESSAGE, BedrockDailyLimitExceeded
 from db import get_db
 
 try:
@@ -168,20 +169,23 @@ async def chat(report_id: str, body: ChatRequest):
     tool_used = None
     response = None
 
-    for _ in range(3):
-        response = await llm.ainvoke(messages)
-        messages.append(response)
+    try:
+        for _ in range(3):
+            response = await llm.ainvoke(messages)
+            messages.append(response)
 
-        if not response.tool_calls:
-            break
+            if not response.tool_calls:
+                break
 
-        for tc in response.tool_calls:
-            if tc["name"] in _KNOWN_TOOLS:
-                tool_used = tc["name"]
-                result = search_knowledge_base.invoke(tc["args"])
-            else:
-                result = json.dumps({"error": f"Unknown tool: {tc['name']}"})
-            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+            for tc in response.tool_calls:
+                if tc["name"] in _KNOWN_TOOLS:
+                    tool_used = tc["name"]
+                    result = search_knowledge_base.invoke(tc["args"])
+                else:
+                    result = json.dumps({"error": f"Unknown tool: {tc['name']}"})
+                messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+    except BedrockDailyLimitExceeded:
+        raise HTTPException(status_code=429, detail=BEDROCK_LIMIT_MESSAGE)
 
     answer = response.content if response else ""
     if isinstance(answer, list):

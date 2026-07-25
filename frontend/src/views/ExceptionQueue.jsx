@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getExceptions, getInvestigationReport, streamLiveInvestigation, submitDecision, sendChat } from '../api/client.js';
+import { apiUrl, getExceptions, getInvestigationReport, streamLiveInvestigation, submitDecision, sendChat } from '../api/client.js';
 
 function Md({ children }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>;
@@ -16,6 +16,7 @@ const STATUS_PILL = {
   evaluating:        { cls: 'yellow',  label: 'Evaluating…', spinner: true },
   investigating:     { cls: 'blue',    label: 'Investigating', spinner: true },
   awaiting_approval: { cls: 'orange',  label: 'Awaiting Approval' },
+  limit_reached:     { cls: 'red',     label: 'AI limit reached' },
   resolved:          { cls: 'green',   label: 'Resolved' },
   rejected:          { cls: 'gray',    label: 'Rejected' },
 };
@@ -76,6 +77,7 @@ export default function ExceptionQueue() {
   const [sortBy, setSortBy] = useState('default');
   const [typeFilter, setTypeFilter] = useState('all');
   const [animatingIds, setAnimatingIds] = useState(new Set());
+  const [aiLimitNotice, setAiLimitNotice] = useState('');
 
   const cancelRef = useRef(null);
   const streamRef = useRef(null);
@@ -103,12 +105,21 @@ export default function ExceptionQueue() {
     setReport(null);
     setDecision(null);
     setChat([]);
+    setAiLimitNotice('');
 
     const done = ['awaiting_approval', 'resolved', 'rejected'];
     if (done.includes(row.status)) {
       runningRef.current = false;
       setRunning(false);
       loadStoredReport(row);
+      return;
+    }
+
+    if (row.status === 'limit_reached') {
+      setAiLimitNotice(row.recommendation?.rationale || row.precheck_summary?.action_hint || 'Daily AI investigation limit reached. Please try again tomorrow.');
+      setLines([{ agent: 'System', cls: 'resolution', text: row.recommendation?.rationale || row.precheck_summary?.action_hint || 'Daily AI investigation limit reached. Please try again tomorrow.' }]);
+      runningRef.current = false;
+      setRunning(false);
       return;
     }
 
@@ -131,6 +142,10 @@ export default function ExceptionQueue() {
         (final) => {
           runningRef.current = false;
           setRunning(false);
+          if (final?.type === 'limit_reached') {
+            setAiLimitNotice(final.message || 'Daily AI investigation limit reached. Please try again tomorrow.');
+            return;
+          }
           if (final?.report_id) {
             setReport({ report_id: final.report_id, recommendation: final.recommendation });
           }
@@ -156,6 +171,7 @@ export default function ExceptionQueue() {
     setLines([]);
     setReport(null);
     setDecision(null);
+    setAiLimitNotice('');
   }
 
   function fetchQueue() {
@@ -232,6 +248,9 @@ export default function ExceptionQueue() {
     setChat((c) => [...c, { role: 'user', text: message }]);
     setChatBusy(true);
     const res = await sendChat(report.report_id, selected.tx_id, message);
+    if (res.limitReached) {
+      setAiLimitNotice(res.answer);
+    }
     setChat((c) => [...c, { role: 'bot', text: res.answer, tool: res.tool }]);
     setChatBusy(false);
   }
@@ -419,10 +438,17 @@ export default function ExceptionQueue() {
                 {running && <span className="cursor" />}
               </div>
 
+              {aiLimitNotice && (
+                <div className="inline-limit-notice">
+                  <span className="inline-limit-notice__badge">AI daily limit</span>
+                  <span>{aiLimitNotice}</span>
+                </div>
+              )}
+
               {report?.report_id && (
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <a
-                    href={`/api/reports/${report.report_id}/pdf`}
+                    href={apiUrl(`/api/reports/${report.report_id}/pdf`)}
                     download={`${report.report_id}.pdf`}
                     className="btn"
                     style={{ fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}

@@ -7,6 +7,7 @@ import yaml
 from langchain_aws import ChatBedrockConverse as ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+from bedrock_guard import BedrockDailyLimitExceeded
 from agents.state import InvestigationState
 from agents.tools.payment_tools import get_resolution_history
 from agents.tools.knowledge_base_tool import search_knowledge_base
@@ -156,6 +157,8 @@ async def resolution_node(state: InvestigationState, llm: ChatBedrock) -> dict:
         except Exception:
             recommendation = {"action": raw, "rationale": "See full agent output.", "confidence": 0.8,
                               "requires_human_approval": True}
+    except BedrockDailyLimitExceeded:
+        raise
     except Exception as exc:
         logger.warning("LLM call failed in resolution_node, falling back to KB rules: %s", exc)
         recommendation = _kb_fallback_recommendation(error_codes)

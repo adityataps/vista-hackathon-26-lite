@@ -1,37 +1,41 @@
 // ---------------------------------------------------------------------------
 // API client for the PayInvestigator FastAPI backend.
 //
-// Every call targets the planned /api/* endpoints. If the backend is not
-// reachable (hackathon dev, demo without infra), the client transparently
-// falls back to the bundled mock datasets, so the UI always works.
-//
-// Planned backend endpoints (FastAPI):
-//   GET  /api/metrics/kpis
-//   GET  /api/metrics/volume
-//   GET  /api/metrics/savings
-//   GET  /api/metrics/exceptions
-//   GET  /api/metrics/correspondents
-//   GET  /api/metrics/ai
-//   GET  /api/exceptions
-//   POST /api/exceptions/{tx_id}/investigate     (SSE stream of agent events)
-//   POST /api/resolutions/{report_id}/approve
-//   POST /api/resolutions/{report_id}/reject
-//   POST /api/reports/{report_id}/chat
-//   GET  /api/monitoring/inflight
-//   GET  /api/monitoring/alerts
-//   GET  /api/monitoring/heatmap
+// Local dev uses the Vite /api proxy. Production builds can point directly at
+// the backend Lambda Function URL via VITE_API_BASE_URL.
 // ---------------------------------------------------------------------------
 
 import * as mock from '../mock/data.js';
 
 const API_TIMEOUT_MS = 2500;
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+
+class ApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function apiUrl(path) {
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
+}
 
 async function apiFetch(path, options = {}) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), options.timeout ?? API_TIMEOUT_MS);
   try {
-    const res = await fetch(path, { ...options, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(apiUrl(path), { ...options, signal: controller.signal });
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`;
+      try {
+        const payload = await res.json();
+        message = payload.detail || payload.message || message;
+      } catch {
+        // ignore parse failure
+      }
+      throw new ApiError(res.status, message);
+    }
     return res;
   } finally {
     clearTimeout(t);
@@ -47,7 +51,6 @@ async function getJson(path, fallback) {
   }
 }
 
-// ---------- Dashboard ----------
 export const getKpis = () => getJson('/api/metrics/kpis', mock.kpis);
 export const getVolume = () => getJson('/api/metrics/volume', mock.volumeSeries);
 export const getSavings = () => getJson('/api/metrics/savings', mock.savingsSeries);
@@ -57,31 +60,18 @@ export const getTokenCosts = () => getJson('/api/metrics/token-costs', mock.toke
 export const getThroughput = () => getJson('/api/metrics/throughput', mock.hourlyThroughput);
 export const getAiStats = () => getJson('/api/metrics/ai', mock.aiStats);
 
-// ---------- Exceptions ----------
 export const getExceptions = (status = 'active') =>
   getJson(`/api/exceptions?status=${status}`, mock.exceptionQueue);
 
 export const getInvestigationReport = (txId) =>
   getJson(`/api/exceptions/${txId}/report`, null);
 
-/**
- * Streams an agent investigation.
- * Tries the backend SSE endpoint first; falls back to replaying the
- * scripted investigation with realistic timing.
- *
- * onEvent({agent, cls, text})   — one reasoning/tool line
- * onDone({report_id, recommendation}) — investigation complete, HITL gate
- * Returns a cancel() function.
- */
 export function streamInvestigation(txId, onEvent, onDone) {
   let cancelled = false;
 
   (async () => {
-    // --- try real backend (SSE over fetch) ---
-    // Note: no AbortController timeout here — investigations take 30-90s.
-    // The outer `cancelled` flag handles user-initiated cancellation.
     try {
-      const res = await fetch(`/api/exceptions/${txId}/investigate`, { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/exceptions/${txId}/investigate`), { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -97,6 +87,7 @@ export function streamInvestigation(txId, onEvent, onDone) {
           if (!line.startsWith('data:')) continue;
           const evt = JSON.parse(line.slice(5));
           if (evt.type === 'done') final = evt;
+          else if (evt.type === 'limit_reached') final = evt;
           else onEvent(evt);
         }
       }
@@ -106,7 +97,6 @@ export function streamInvestigation(txId, onEvent, onDone) {
       /* backend offline → scripted fallback */
     }
 
-    // --- scripted fallback (only if a script exists for this exact TX) ---
     const script = mock.investigationScripts[txId];
     if (!script) {
       onEvent({ agent: 'System', cls: 'technical', text: `Backend unavailable — cannot investigate ${txId} in offline mode.` });
@@ -126,16 +116,12 @@ export function streamInvestigation(txId, onEvent, onDone) {
   return () => { cancelled = true; };
 }
 
-/**
- * Tails the background investigation as it runs (GET SSE).
- * Same callback contract as streamInvestigation.
- */
 export function streamLiveInvestigation(txId, onEvent, onDone) {
   let cancelled = false;
 
   (async () => {
     try {
-      const res = await fetch(`/api/exceptions/${txId}/stream`);
+      const res = await fetch(apiUrl(`/api/exceptions/${txId}/stream`));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -151,6 +137,7 @@ export function streamLiveInvestigation(txId, onEvent, onDone) {
           if (!line.startsWith('data:')) continue;
           const evt = JSON.parse(line.slice(5));
           if (evt.type === 'done') final = evt;
+          else if (evt.type === 'limit_reached') final = evt;
           else onEvent(evt);
         }
       }
@@ -172,7 +159,6 @@ export async function submitDecision(reportId, decision) {
   }
 }
 
-/** Report Q&A chat. Backend first, canned answers as fallback. */
 export async function sendChat(reportId, txId, message) {
   try {
     const res = await apiFetch(`/api/reports/${reportId}/chat`, {
@@ -183,7 +169,10 @@ export async function sendChat(reportId, txId, message) {
     });
     const data = await res.json();
     return { answer: data.answer, tool: data.tool ?? null, source: 'api' };
-  } catch {
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 429) {
+      return { answer: err.message, tool: null, source: 'api', limitReached: true };
+    }
     const bank = mock.chatAnswers[txId] ?? [];
     const hit = bank.find((c) => c.match.test(message)) ?? mock.chatAnswers.default[0];
     await new Promise((r) => setTimeout(r, 700));
@@ -191,32 +180,23 @@ export async function sendChat(reportId, txId, message) {
   }
 }
 
-// ---------- Demo payment generator ----------
-/**
- * Triggers the demo payment generator.
- * Backend contract: POST /api/demo/generate → { generated: <count> }
- * (generator creates CBPR+ payments, writes them to the DB, agent picks them up)
- */
 export async function generateDemoPayments() {
   try {
     const res = await apiFetch('/api/demo/generate', { method: 'POST', timeout: 30000 });
     const data = await res.json();
     return { generated: data.generated ?? 0, source: 'api' };
   } catch {
-    await new Promise((r) => setTimeout(r, 1800)); // simulate generator run
+    await new Promise((r) => setTimeout(r, 1800));
     return { generated: 25, source: 'mock' };
   }
 }
 
-// ---------- Monitoring ----------
 export const getInflight = () => getJson('/api/monitoring/inflight', mock.inflightPayments);
 export const getAlerts = () => getJson('/api/monitoring/alerts', mock.activeAlerts);
 export const getHeatmap = () => getJson('/api/monitoring/heatmap', mock.heatmap);
 
-/** Lightweight connectivity probe for the header badge. */
 export async function probeBackend() {
   try {
-    // probe a real data endpoint — the backend serves no /api/health route
     await apiFetch('/api/metrics/kpis', { timeout: 2500 });
     return true;
   } catch {

@@ -1,30 +1,29 @@
-"""Lambda handler: SQS-triggered pacs.008 XML ingest into PostgreSQL.
+"""Lambda handler: SQS-triggered pacs.008 XML ingest into Aurora via the RDS Data API.
 
 SQS receives S3 ObjectCreated events for the payments/ prefix.
 Downloads each XML from S3, parses key pacs.008 fields, runs business-error
-detection (error_rules.py, ported from
-jobs/pacs008-generator/agent_error_knowledge.yaml), upserts into the payments
-table (ON CONFLICT msg_id DO NOTHING for idempotency), and - only if an error
-was detected - POSTs {payment_id, error_msg} to a configurable endpoint.
+checking, upserts into the payments table, writes/upserts an `exceptions` row
+for faulty payments, and can optionally POST structured error hits to the
+backend API.
 
 Configuration (environment variables, set in infra/lambda.tf):
-  DATABASE_URL            - Postgres connection string (required)
-  REFERENCE_DATA_S3_URI   - s3://bucket/prefix/ for optional bic_directory.json /
-                            watchlist.json / closed_accounts.json (optional -
-                            missing files just disable the corresponding check)
-  ERROR_NOTIFY_ENDPOINT_URL - POST target for detected errors (optional - if
-                            unset, no POST is ever attempted)
+  DB_CLUSTER_ARN            - Aurora cluster ARN for the Data API (required)
+  DB_SECRET_ARN             - Secrets Manager ARN with DB credentials (required)
+  DB_NAME                   - Database name (required)
+  REFERENCE_DATA_S3_URI     - s3://bucket/prefix/ for optional reference data
+  ERROR_NOTIFY_ENDPOINT_URL - Optional backend endpoint for structured error POSTs
 """
 import json
 import logging
 import os
 import re
 import urllib.request
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 import boto3
 import defusedxml.ElementTree as ET
-import psycopg2
 
 import error_rules
 import reference_data
@@ -36,20 +35,225 @@ logger.setLevel(logging.INFO)
 HEAD_NS = 'urn:iso:std:iso:20022:tech:xsd:head.001.001.02'
 PACS_NS = 'urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08'
 
-_db_conn = None
+_db_ready = False
+_data_api_client: Any = None
+_ref_data = None
+
+
+class DataAPIConnection:
+    def __init__(self, resource_arn: str, secret_arn: str, database: str):
+        self.resource_arn = resource_arn
+        self.secret_arn = secret_arn
+        self.database = database
+        self.autocommit = False
+        self.closed = False
+        self._transaction_id: str | None = None
+
+    def cursor(self):
+        return DataAPICursor(self)
+
+    def commit(self):
+        if self._transaction_id:
+            _data_api().commit_transaction(
+                resourceArn=self.resource_arn,
+                secretArn=self.secret_arn,
+                transactionId=self._transaction_id,
+            )
+            self._transaction_id = None
+
+    def rollback(self):
+        if self._transaction_id:
+            _data_api().rollback_transaction(
+                resourceArn=self.resource_arn,
+                secretArn=self.secret_arn,
+                transactionId=self._transaction_id,
+            )
+            self._transaction_id = None
+
+    def _begin_transaction(self):
+        if self._transaction_id is None:
+            response = _data_api().begin_transaction(
+                resourceArn=self.resource_arn,
+                secretArn=self.secret_arn,
+                database=self.database,
+            )
+            self._transaction_id = response["transactionId"]
+
+    def _execute(self, sql: str, parameters: list[dict] | None = None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "resourceArn": self.resource_arn,
+            "secretArn": self.secret_arn,
+            "database": self.database,
+            "sql": sql,
+            "includeResultMetadata": True,
+        }
+        if parameters:
+            kwargs["parameters"] = parameters
+        if not self.autocommit:
+            self._begin_transaction()
+            kwargs["transactionId"] = self._transaction_id
+        return _data_api().execute_statement(**kwargs)
+
+
+class DataAPICursor:
+    def __init__(self, conn: DataAPIConnection):
+        self.conn = conn
+        self._rows: list[tuple] = []
+        self.rowcount = -1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql: str, params: tuple | list | dict | None = None):
+        translated_sql, translated_params = _translate_sql(sql, params)
+        response = self.conn._execute(translated_sql, translated_params)
+        self._rows = _decode_rows(response)
+        self.rowcount = len(self._rows) if self._rows else response.get("numberOfRecordsUpdated", 0)
+        return self
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+def _data_api():
+    global _data_api_client
+    if _data_api_client is None:
+        _data_api_client = boto3.client(
+            "rds-data",
+            region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        )
+    return _data_api_client
+
+
+def _db_settings() -> tuple[str, str, str] | None:
+    resource_arn = os.environ.get("DB_CLUSTER_ARN", "")
+    secret_arn = os.environ.get("DB_SECRET_ARN", "")
+    database = os.environ.get("DB_NAME", "")
+    if not resource_arn or not secret_arn or not database:
+        return None
+    return resource_arn, secret_arn, database
+
+
+def _translate_sql(sql: str, params=None) -> tuple[str, list[dict]]:
+    if params is None:
+        return sql, []
+    if isinstance(params, dict):
+        used = []
+        seen = set()
+        for match in re.finditer(r"%\(([^)]+)\)s", sql):
+            key = match.group(1)
+            if key not in seen:
+                seen.add(key)
+                used.append(key)
+        translated = re.sub(r"%\(([^)]+)\)s", lambda m: f":{m.group(1)}", sql)
+        return translated, [_to_data_api_param(key, params[key]) for key in used]
+    values = list(params) if isinstance(params, (list, tuple)) else [params]
+    index = 0
+
+    def repl(_match):
+        nonlocal index
+        index += 1
+        return f":p{index}"
+
+    translated = re.sub(r"%s", repl, sql)
+    return translated, [_to_data_api_param(f"p{i + 1}", value) for i, value in enumerate(values)]
+
+
+def _to_data_api_param(name: str, value: Any) -> dict[str, Any]:
+    param: dict[str, Any] = {"name": name}
+    if value is None:
+        param["value"] = {"isNull": True}
+    elif isinstance(value, bool):
+        param["value"] = {"booleanValue": value}
+    elif isinstance(value, int) and not isinstance(value, bool):
+        param["value"] = {"longValue": value}
+    elif isinstance(value, Decimal):
+        param["value"] = {"stringValue": format(value, "f")}
+        param["typeHint"] = "DECIMAL"
+    elif isinstance(value, float):
+        param["value"] = {"doubleValue": value}
+    elif isinstance(value, datetime):
+        param["value"] = {"stringValue": value.isoformat(sep=" ", timespec="seconds")}
+        param["typeHint"] = "TIMESTAMP"
+    elif isinstance(value, date):
+        param["value"] = {"stringValue": value.isoformat()}
+        param["typeHint"] = "DATE"
+    elif isinstance(value, (dict, list)):
+        param["value"] = {"stringValue": json.dumps(value)}
+        param["typeHint"] = "JSON"
+    else:
+        param["value"] = {"stringValue": str(value)}
+    return param
+
+
+def _decode_rows(response: dict[str, Any]) -> list[tuple]:
+    metadata = response.get("columnMetadata") or []
+    type_names = [column.get("typeName", "") for column in metadata]
+    rows = []
+    for record in response.get("records", []):
+        rows.append(tuple(_decode_field(field, type_names[idx] if idx < len(type_names) else "") for idx, field in enumerate(record)))
+    return rows
+
+
+def _decode_field(field: dict[str, Any], type_name: str) -> Any:
+    if field.get("isNull"):
+        return None
+    if "stringValue" in field:
+        value = field["stringValue"]
+        normalized = type_name.lower()
+        if normalized in {"json", "jsonb"}:
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+        if normalized == "date":
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return value
+        if normalized in {"timestamp", "timestamptz", "timestamp with time zone", "timestamp without time zone"}:
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return value
+        if normalized in {"numeric", "decimal"}:
+            try:
+                return Decimal(value)
+            except Exception:
+                return value
+        return value
+    if "longValue" in field:
+        return field["longValue"]
+    if "doubleValue" in field:
+        return field["doubleValue"]
+    if "booleanValue" in field:
+        return field["booleanValue"]
+    return None
 
 
 def _get_db():
-    global _db_conn
-    if _db_conn is None or _db_conn.closed:
-        _db_conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        _ensure_schema(_db_conn)
-    return _db_conn
+    global _db_ready
+    settings = _db_settings()
+    if not settings:
+        raise RuntimeError("DB_CLUSTER_ARN, DB_SECRET_ARN, and DB_NAME are required")
+    conn = DataAPIConnection(*settings)
+    if not _db_ready:
+        _ensure_schema(conn)
+        _db_ready = True
+    return conn
 
 
 def _ensure_schema(conn):
-    with conn.cursor() as cur:
-        cur.execute("""
+    old_autocommit = conn.autocommit
+    conn.autocommit = True
+    statements = [
+        """
             CREATE TABLE IF NOT EXISTS payments (
                 id              SERIAL PRIMARY KEY,
                 s3_key          TEXT NOT NULL,
@@ -72,8 +276,8 @@ def _ensure_schema(conn):
                 raw_xml         TEXT,
                 ingested_at     TIMESTAMP DEFAULT NOW()
             )
-        """)
-        cur.execute("""
+        """,
+        """
             CREATE TABLE IF NOT EXISTS payment_events (
                 id            SERIAL PRIMARY KEY,
                 event_id      TEXT UNIQUE NOT NULL,
@@ -86,14 +290,29 @@ def _ensure_schema(conn):
                 detail        TEXT,
                 occurred_at   TIMESTAMPTZ NOT NULL
             )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_payment_events_uetr ON payment_events(uetr)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_payment_events_msg_id ON payment_events(msg_id)")
-        # Idempotent migration for tables created before error detection existed.
-        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS has_error BOOLEAN NOT NULL DEFAULT FALSE")
-        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS error_msg TEXT")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_has_error ON payments (has_error)")
-    conn.commit()
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_payment_events_uetr ON payment_events(uetr)",
+        "CREATE INDEX IF NOT EXISTS idx_payment_events_msg_id ON payment_events(msg_id)",
+        "ALTER TABLE payments ADD COLUMN IF NOT EXISTS has_error BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE payments ADD COLUMN IF NOT EXISTS error_msg TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_payments_has_error ON payments (has_error)",
+        """
+            CREATE TABLE IF NOT EXISTS exceptions (
+                id              SERIAL PRIMARY KEY,
+                payment_id      INTEGER,
+                msg_id          TEXT UNIQUE NOT NULL,
+                uetr            TEXT NOT NULL,
+                detected_errors JSONB NOT NULL DEFAULT '[]',
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TIMESTAMPTZ DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
+            )
+        """,
+    ]
+    for statement in statements:
+        with conn.cursor() as cur:
+            cur.execute(statement)
+    conn.autocommit = old_autocommit
 
 
 def _parse_pacs008(xml_content):
@@ -121,12 +340,19 @@ def _parse_pacs008(xml_content):
     amount = Decimal(amt_el.text.strip()) if amt_el is not None and amt_el.text else None
     currency = amt_el.get('Ccy') if amt_el is not None else None
 
-    # Optional FX fields (only present when InstdAmt currency differs from
-    # settlement currency) - used by error_rules.check_xchg_rate_inconsistent,
-    # not persisted to the payments table.
     instd_amt_el = root.find(f'{tx_path}/{p}InstdAmt')
     instd_amt = Decimal(instd_amt_el.text.strip()) if instd_amt_el is not None and instd_amt_el.text else None
     instd_amt_ccy = instd_amt_el.get('Ccy') if instd_amt_el is not None else None
+
+    settlement_date_text = tx(f'{tx_path}/{p}IntrBkSttlmDt')
+    try:
+        settlement_date = date.fromisoformat(settlement_date_text) if settlement_date_text else None
+    except ValueError:
+        # Malformed/unexpected date format in the source XML (e.g. a
+        # deliberately-injected error case) - leave NULL rather than fail
+        # the whole ingest; the Data API requires a real `date` object
+        # (not a string) to bind against the `settlement_date DATE` column.
+        settlement_date = None
 
     return {
         'msg_id':         tx(f'.//{h}BizMsgIdr'),
@@ -138,7 +364,7 @@ def _parse_pacs008(xml_content):
         'instd_amt':      instd_amt,
         'instd_amt_ccy':  instd_amt_ccy,
         'xchg_rate':      tx(f'{tx_path}/{p}XchgRate'),
-        'settlement_date': tx(f'{tx_path}/{p}IntrBkSttlmDt'),
+        'settlement_date': settlement_date,
         'sender_bic':     tx(f'.//{h}Fr/{h}FIId/{h}FinInstnId/{h}BICFI'),
         'receiver_bic':   tx(f'.//{h}To/{h}FIId/{h}FinInstnId/{h}BICFI'),
         'debtor_bic':     tx(f'{tx_path}/{p}DbtrAgt/{p}FinInstnId/{p}BICFI'),
@@ -147,14 +373,10 @@ def _parse_pacs008(xml_content):
         'debtor_iban':    tx(f'{dbtr_acct}/{p}IBAN') or tx(f'{dbtr_acct}/{p}Othr/{p}Id'),
         'creditor_name':  tx(f'{tx_path}/{p}Cdtr/{p}Nm'),
         'creditor_iban':  tx(f'{cdtr_acct}/{p}IBAN') or tx(f'{cdtr_acct}/{p}Othr/{p}Id'),
-        # Address fields, used only by error_rules.check_address_incomplete.
         'creditor_ctry':    tx(f'{tx_path}/{p}Cdtr/{p}PstlAdr/{p}Ctry'),
         'creditor_twn_nm':  tx(f'{tx_path}/{p}Cdtr/{p}PstlAdr/{p}TwnNm'),
         'creditor_strt_nm': tx(f'{tx_path}/{p}Cdtr/{p}PstlAdr/{p}StrtNm'),
     }
-
-
-_ref_data = None
 
 
 def _get_reference_data():
@@ -165,10 +387,7 @@ def _get_reference_data():
 
 
 def _ingest_record(s3_key, parsed, raw_xml):
-    """Runs error detection, upserts the row, and returns
-    (payment_id, has_error, error_msg). payment_id is None if the msg_id was
-    already ingested (ON CONFLICT DO NOTHING - no new notification in that
-    case, since it would have already fired on the original insert)."""
+    """Runs error detection, upserts the row, and returns payment details."""
     is_faulty = 'FAULTY' in s3_key.upper()
     conn = _get_db()
     ref = _get_reference_data()
@@ -218,7 +437,7 @@ def _ingest_record(s3_key, parsed, raw_xml):
 
 def _notify_backend_exceptions(msg_id: str, uetr: str, hits: list):
     """Fire-and-forget POST to backend /api/ingest/exceptions with structured error hits."""
-    backend_url = os.environ.get("BACKEND_URL", "")
+    backend_url = os.environ.get("ERROR_NOTIFY_ENDPOINT_URL") or os.environ.get("BACKEND_URL", "")
     if not backend_url or not hits:
         return
     try:
@@ -234,6 +453,21 @@ def _notify_backend_exceptions(msg_id: str, uetr: str, hits: list):
         logger.info("Notified backend of exception: msg_id=%s errors=%s", msg_id, [h.code for h in hits])
     except Exception as exc:
         logger.warning("Backend exception notification failed (non-fatal): %s", exc)
+
+
+def _upsert_exception(payment_id: int, msg_id: str, uetr: str, hits: list) -> None:
+    conn = _get_db()
+    detected = [{"code": h.code, "field": "", "value": h.message} for h in hits]
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO exceptions (msg_id, uetr, detected_errors, payment_id, status)
+            VALUES (%s, %s, %s, %s, 'pending')
+            ON CONFLICT (msg_id) DO UPDATE SET
+                detected_errors = EXCLUDED.detected_errors,
+                payment_id = EXCLUDED.payment_id,
+                updated_at = NOW()
+        """, (msg_id, uetr, detected, payment_id))
+    conn.commit()
 
 
 def lambda_handler(event, context):
@@ -269,6 +503,7 @@ def lambda_handler(event, context):
                 )
                 if payment_id is not None and has_error:
                     notify_payment_error(payment_id, error_msg)
+                    _upsert_exception(payment_id, parsed.get('msg_id', ''), parsed.get('uetr', ''), hits)
                     _notify_backend_exceptions(parsed.get('msg_id', ''), parsed.get('uetr', ''), hits)
                 processed += 1
             except Exception as exc:

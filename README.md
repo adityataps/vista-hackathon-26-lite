@@ -103,17 +103,21 @@ Four pre-scripted scenarios the live demo must nail:
 
 | Layer | Choice |
 |---|---|
-| AI / LLM | Claude `claude-sonnet-4-6` via AWS Bedrock |
+| AI / LLM | Claude Haiku 4.5 via AWS Bedrock (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) |
 | Agent framework | LangGraph (Python) — graph-based multi-agent orchestration, parallel node execution, built-in checkpointing |
 | Responsible AI | Amazon Bedrock Guardrails — topic denial, PII anonymization, content filtering |
-| Knowledge Base | Amazon Bedrock KB + OpenSearch Serverless (AOSS VECTORSEARCH) — semantic retrieval over payment ops docs |
-| Backend | FastAPI (Python) |
-| Data store | SQLite seeded from S3 on startup; RDS PostgreSQL for payment events |
-| Frontend | React + Recharts |
-| CI/CD | GitHub Actions → ECR → ECS Fargate (path-gated parallel jobs) |
-| Cloud | AWS (ECS Fargate, ECR, ALB, RDS PostgreSQL, SQS, Lambda, S3, Bedrock, AOSS, ACM) |
-| DNS / TLS | `vistahack26.tapshalkar.com` (Cloudflare CNAME → ALB, ACM cert) |
+| Knowledge Base | pgvector in Aurora PostgreSQL + Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`) |
+| Backend | FastAPI (Python) packaged for AWS Lambda via Lambda Web Adapter + Function URL |
+| Data store | Aurora Serverless v2 PostgreSQL via Data API for payments, investigations, and KB vectors |
+| Frontend | React + Recharts built by Vite and hosted on an S3 static website |
+| CI/CD | GitHub Actions → ECR/Lambda + S3 website sync (path-gated deploy jobs) |
+| Cloud | AWS (Lambda, Function URL, Aurora Serverless v2, SQS, S3, Bedrock, ECR) |
+| DNS / TLS | Backend uses the AWS-managed Function URL; frontend uses the S3 website endpoint |
 | IaC | Terraform (`infra/`) |
+
+Two Bedrock cost controls are layered on top:
+- app-level soft cap via `BEDROCK_DAILY_LIMIT` (shared across chat + embedding calls)
+- AWS Budget + automatic IAM deny backstop for monthly Bedrock spend
 
 ---
 
@@ -125,47 +129,37 @@ GitHub push to main
         ▼
 GitHub Actions (OIDC — no long-lived keys)
   ├── deploy-ingest   (jobs/payment-ingest/** changed)
-  ├── deploy-backend  (backend/**, jobs/pacs008-generator/** changed)
+  ├── deploy-backend  (backend/**, jobs/pacs008-generator/**, infra/assets/** changed)
   └── deploy-frontend (frontend/** changed)
         │
-        ▼
-Cloudflare DNS  →  ALB (HTTPS, ACM cert)
-                    ├── /api/*  → FastAPI :8080  (ECS Fargate)
-                    └── /*      → Nginx/React :80 (ECS Fargate)
-                                       │
-                    ┌──────────────────┼────────────────────┐
-                    ▼                  ▼                     ▼
-              S3 (mock data)    Bedrock (Claude)    RDS PostgreSQL
-              payments/ prefix  claude-sonnet-4-6   (payment records)
-                    │
-                    ▼
-              SQS queue
-                    │
-                    ▼
-              Lambda (payment-xml-ingest)
-              pacs.008 XML → PostgreSQL payments table
+        ├───────────────► ECR (backend / ingest images)
+        │
+        ├───────────────► Lambda Function URL (FastAPI + Lambda Web Adapter)
+        │                    │
+        │                    ├── Bedrock (Claude Haiku 4.5 + Titan embeddings)
+        │                    └── Aurora Serverless v2 PostgreSQL + Data API + pgvector
+        │
+        └───────────────► S3 static website (React/Vite frontend)
+
+S3 payments/ prefix ─► SQS queue ─► Lambda (payment-xml-ingest) ─► Aurora PostgreSQL
 ```
 
 ### Key AWS Resources
 
 | Resource | Name |
 |---|---|
-| ECS Cluster | `payinvestigator` |
-| Backend Service | `payinvestigator-backend` (Fargate, port 8080) |
-| Frontend Service | `payinvestigator-frontend` (Fargate, port 80) |
+| Backend Lambda | `payinvestigator-backend` (FastAPI + Lambda Web Adapter, response streaming) |
+| Backend Function URL | auto-generated `*.lambda-url.us-east-1.on.aws` |
+| Frontend Website Bucket | `payinvestigator-frontend-<account_id>` |
 | ECR — Backend | `payinvestigator-backend` |
-| ECR — Frontend | `payinvestigator-frontend` |
 | ECR — Ingest Lambda | `payinvestigator-ingest` |
 | Lambda | `payinvestigator-payment-xml-ingest` |
 | SQS Queue | `payinvestigator-payment-ingest` |
-| RDS | PostgreSQL 16, `db.t4g.micro` (publicly accessible for team debugging) |
+| Aurora | Aurora Serverless v2 PostgreSQL 16.3+, `db.serverless` |
 | S3 — Mock Data | `payinvestigator-mockdata-<account_id>` |
-| S3 — Knowledge Base | `payinvestigator-kb-<account_id>` |
-| Bedrock Knowledge Base | `OGQEU4WHIQ` |
-| AOSS Collection | `payinvestigator-kb` (VECTORSEARCH) |
+| S3 — Knowledge Base Source Docs | `payinvestigator-kb-<account_id>` |
 | Bedrock Guardrail | `elu2okf0di0w` |
-| ALB | HTTPS listener, path-based routing |
-| Region | `us-west-2` |
+| Region | `us-east-1` |
 
 ---
 
@@ -186,7 +180,7 @@ SQS  payinvestigator-payment-ingest
 Lambda  payment-xml-ingest
       │  parses pacs.008, upserts payment records
       ▼
-RDS PostgreSQL  payments table
+Aurora PostgreSQL  payments + exceptions tables
 ```
 
 The generator produces realistic CBPR+ pacs.008 SR2025 messages with configurable error injection (`error_rate`, `error_codes`) for demo scenario seeding.
@@ -198,19 +192,19 @@ The generator produces realistic CBPR+ pacs.008 SR2025 messages with configurabl
 ```
 backend/                    FastAPI app + agent logic
   main.py                   API routes incl. POST /api/seed, POST /api/investigate
-  seed_db.py                seeds SQLite from S3 on startup
+  kb.py                     Titan embeddings + pgvector KB seeding/search helpers
+  seed_db.py                seeds `kb_chunks` from `infra/assets/*.md` on startup
   agents/
     guardrail.py            Bedrock converse() wrapper with guardrailConfig injection
     graph.py                LangGraph orchestration graph
     nodes/                  Individual agent node implementations
     tools/
-      knowledge_base_tool.py  search_knowledge_base() — Bedrock KB retrieve()
-  Dockerfile                build context: repo root
+      knowledge_base_tool.py  search_knowledge_base() — pgvector cosine search
+  Dockerfile                Lambda Web Adapter image (build context: repo root)
   requirements.txt
 
 frontend/                   React + Vite + Recharts
   src/App.jsx               three-tab dashboard (Ops Dashboard, Exception Queue, Bottleneck Monitor)
-  Dockerfile                multi-stage: node build → nginx serve
 
 jobs/
   pacs008-generator/        pacs.008 XML generation package
@@ -221,22 +215,17 @@ jobs/
     handler.py              downloads XML from S3, upserts to PostgreSQL
     Dockerfile              amazon/aws-lambda-python:3.12 base
 
-infra/                      Terraform (us-west-2)
-  main.tf                   AWS + opensearch-project/opensearch + Cloudflare providers
+infra/                      Terraform (us-east-1)
+  main.tf                   AWS provider + default VPC/subnet data sources
   bedrock.tf                Bedrock Guardrail (topic denial, PII anonymization, content filters)
-  bedrock_kb.tf             Bedrock KB + AOSS collection + opensearch_index pre-creation
-  ecr.tf                    three ECR repos + 5-tag lifecycle policies
-  ecs.tf                    ECS cluster, task definitions, Fargate services
-  alb.tf                    ALB, target groups, HTTPS listener, path routing
-  acm.tf                    ACM certificate (DNS validation)
-  dns.tf                    Cloudflare DNS records (Terraform provider)
-  rds.tf                    RDS PostgreSQL 16, db.t4g.micro (public SG rule for team debug)
+  ecr.tf                    backend + ingest ECR repos + lifecycle policies
+  rds.tf                    Aurora Serverless v2 PostgreSQL + Data API secret wiring
+  lambda.tf                 backend Lambda + Function URL, ingest Lambda, event source mapping
+  s3.tf                     mockdata bucket + KB doc bucket + public frontend website bucket
+  iam.tf                    Lambda execution roles + GitHub OIDC deploy role
+  security_groups.tf        Aurora cluster security group
+  cloudwatch.tf             Lambda log groups
   sqs.tf                    SQS queue + S3 bucket notification
-  lambda.tf                 Lambda function + VPC + event source mapping
-  s3.tf                     mockdata bucket + knowledge_base bucket
-  iam.tf                    task execution role, backend task role, GitHub OIDC role
-  security_groups.tf        ALB, backend, frontend, Lambda, RDS SGs
-  cloudwatch.tf             log groups
   assets/                   KB reference docs (6 markdown files, uploaded to KB S3 bucket)
   outputs.tf
 
@@ -290,15 +279,14 @@ python -m pacs008_generator.generator   # writes to output/
 cd infra
 cp terraform.tfvars.example terraform.tfvars   # fill in values; set aws_profile
 terraform init
+terraform fmt
+terraform validate
 terraform plan
-
-# Standard apply:
-terraform apply
-
-# When bedrock_kb.tf / opensearch_index changes are involved, the opensearch provider
-# doesn't inherit the AWS SSO session — export creds first:
-eval "$(aws configure export-credentials --profile AdministratorAccess-446643829639 --format env)" && terraform apply -auto-approve
 ```
+
+Before first apply, set:
+- `budget_alert_email` in `infra/terraform.tfvars`
+- optionally `bedrock_daily_limit` if you want something other than the default `100`
 
 Required GitHub secret: `AWS_ACCOUNT_ID`
 
