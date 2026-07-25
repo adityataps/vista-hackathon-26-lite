@@ -7,7 +7,12 @@
 
 import * as mock from '../mock/data.js';
 
-const API_TIMEOUT_MS = 2500;
+// The lite deployment's Lambda concurrency ceiling means real responses can
+// legitimately take tens of seconds under load. A short timeout here causes
+// the UI to give up and silently fall back to static mock data even though
+// the backend is up and would have answered. Give real requests room to
+// finish before treating the backend as unreachable.
+const API_TIMEOUT_MS = 45000;
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 
 class ApiError extends Error {

@@ -175,7 +175,7 @@ export default function ExceptionQueue() {
   }
 
   function fetchQueue() {
-    getExceptions('active').then(({ data, source }) => {
+    return getExceptions('active').then(({ data, source }) => {
       if (source === 'mock') {
         // On transient DB failures, keep showing the last real data rather than
         // replacing it with the static mock fallback.
@@ -211,9 +211,19 @@ export default function ExceptionQueue() {
   }
 
   useEffect(() => {
-    fetchQueue();
-    const id = setInterval(fetchQueue, 5000);
-    return () => { clearInterval(id); cancelRef.current?.(); };
+    // Poll by scheduling the next fetch only after the current one settles,
+    // rather than a fixed setInterval. Requests can take tens of seconds on
+    // the lite backend, and stacking overlapping polls would burn through
+    // the account's small Lambda concurrency ceiling even faster.
+    let stopped = false;
+    let timeoutId;
+    function loop() {
+      fetchQueue().finally(() => {
+        if (!stopped) timeoutId = setTimeout(loop, 5000);
+      });
+    }
+    loop();
+    return () => { stopped = true; clearTimeout(timeoutId); cancelRef.current?.(); };
   }, []);
 
   useEffect(() => {
