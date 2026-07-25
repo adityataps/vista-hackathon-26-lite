@@ -9,7 +9,6 @@ resource "aws_lambda_function" "backend" {
 
   environment {
     variables = {
-      AWS_DEFAULT_REGION     = var.region
       AWS_LWA_INVOKE_MODE    = "response_stream"
       PORT                   = "8080"
       S3_BUCKET              = aws_s3_bucket.mockdata.bucket
@@ -42,6 +41,54 @@ resource "aws_lambda_function_url" "backend" {
   function_name      = aws_lambda_function.backend.function_name
   authorization_type = "NONE"
   invoke_mode        = "RESPONSE_STREAM"
+}
+
+# Required alongside authorization_type = "NONE" above: Function URLs need an
+# explicit resource-based policy statement to actually permit unauthenticated
+# invocation, otherwise every request 403s regardless of authorization_type.
+resource "aws_lambda_permission" "backend_function_url_public" {
+  statement_id           = "AllowPublicFunctionUrlInvoke"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.backend.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+# As of Oct 2025, AWS requires a SECOND statement granting lambda:InvokeFunction
+# (scoped via the lambda:InvokedViaFunctionUrl condition) in addition to
+# lambda:InvokeFunctionUrl above. Without this, every Function URL request 403s
+# with AccessDeniedException even though authorization_type is NONE and the
+# InvokeFunctionUrl permission is present.
+# See https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html
+#
+# NOTE: the `invoked_via_function_url` argument on aws_lambda_permission was
+# only added to the AWS provider in v6.55.0; this repo pins provider v5.x, so
+# we shell out via the CLI instead. Once the provider is upgraded to >= 6.55.0,
+# replace this with a native aws_lambda_permission resource (see git history
+# of this file for the exact resource block).
+resource "null_resource" "backend_function_url_invoke_permission" {
+  triggers = {
+    function_name = aws_lambda_function.backend.function_name
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e
+      if [ -n "${var.aws_profile}" ] && [ "${var.aws_profile}" != "default" ]; then
+        export AWS_PROFILE="${var.aws_profile}"
+      fi
+      aws lambda add-permission \
+        --function-name ${aws_lambda_function.backend.function_name} \
+        --statement-id AllowPublicFunctionInvokeViaUrl \
+        --action lambda:InvokeFunction \
+        --principal '*' \
+        --invoked-via-function-url \
+        --region ${var.region} \
+        || true
+    EOT
+  }
+
+  depends_on = [aws_lambda_permission.backend_function_url_public]
 }
 
 resource "aws_lambda_function" "payment_ingest" {

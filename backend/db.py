@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -253,26 +254,38 @@ def get_db():
     if not settings:
         return None
     conn = DataAPIConnection(*settings)
-    try:
-        if not _schema_done:
-            _ensure_schema(conn)
-            _schema_done = True
-    except Exception as exc:
-        logger.warning("DB connect failed: %s", exc)
-        return None
+    if not _schema_done:
+        try:
+            _schema_done = _ensure_schema(conn)
+        except Exception as exc:
+            logger.warning("DB connect failed: %s", exc)
+            return None
     return conn
 
 
-def _ensure_schema(conn):
+def _ensure_schema(conn) -> bool:
+    """Create/verify the schema. Retries transient failures (e.g. Aurora
+    Serverless v2 cold-starting from 0 ACU on the very first connection).
+    Returns True only if every statement ultimately succeeded, so callers
+    can avoid permanently caching a half-applied schema as "done"."""
     old_autocommit = conn.autocommit
     conn.autocommit = True
+    all_ok = True
 
-    def _run(stmt: str):
-        try:
-            with conn.cursor() as cur:
-                cur.execute(stmt)
-        except Exception:
-            logger.debug("Schema stmt skipped: %.60s", stmt.strip()[:60])
+    def _run(stmt: str, attempts: int = 3, delay: float = 2.0):
+        nonlocal all_ok
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(stmt)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    time.sleep(delay)
+        all_ok = False
+        logger.warning("Schema stmt failed after retries: %.80s: %s", stmt.strip()[:80], last_exc)
 
     _run("CREATE EXTENSION IF NOT EXISTS vector")
 
@@ -397,3 +410,4 @@ def _ensure_schema(conn):
     """)
 
     conn.autocommit = old_autocommit
+    return all_ok

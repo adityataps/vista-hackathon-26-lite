@@ -1,0 +1,17 @@
+# Never bake local dev env files or secrets into container images.
+# main.py calls load_dotenv() at startup, so any .env file present in the
+# image would silently override Lambda's IAM-role-based AWS credential
+# resolution (e.g. a local AWS_PROFILE that doesn't exist in the container).
+.env
+*.env
+.env.*
+**/.env
+**/*.env
+
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.terraform
+**/*.tfstate*
