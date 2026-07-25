@@ -272,7 +272,7 @@ def _ensure_schema(conn) -> bool:
     conn.autocommit = True
     all_ok = True
 
-    def _run(stmt: str, attempts: int = 3, delay: float = 2.0):
+    def _run(stmt: str, attempts: int = 6, base_delay: float = 2.0, max_delay: float = 20.0):
         nonlocal all_ok
         last_exc: Exception | None = None
         for attempt in range(attempts):
@@ -283,7 +283,12 @@ def _ensure_schema(conn) -> bool:
             except Exception as exc:
                 last_exc = exc
                 if attempt < attempts - 1:
-                    time.sleep(delay)
+                    # Exponential backoff: Aurora Serverless v2 resuming from 0 ACU
+                    # can throw StatementTimeoutException on the first Data API call
+                    # for up to ~30s while it scales up. 3 attempts / 2s was too
+                    # short to reliably survive that window, so give this up to
+                    # ~50s of total retry budget (2+4+8+16+20) before giving up.
+                    time.sleep(min(base_delay * (2 ** attempt), max_delay))
         all_ok = False
         logger.warning("Schema stmt failed after retries: %.80s: %s", stmt.strip()[:80], last_exc)
 
