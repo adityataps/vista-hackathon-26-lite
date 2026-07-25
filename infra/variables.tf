@@ -52,6 +52,12 @@ variable "cloudflare_zone_id" {
   default     = "9a2b68936aec95fc2ad33a144cec981a"
 }
 
+variable "cloudflare_zone_name" {
+  description = "Root zone name in Cloudflare, used to compute record names relative to the zone."
+  type        = string
+  default     = "tapshalkar.com"
+}
+
 variable "custom_domain" {
   description = "Custom subdomain the frontend is served from, proxied through Cloudflare."
   type        = string

@@ -3,7 +3,13 @@ output "backend_function_url" {
 }
 
 output "frontend_website_url" {
-  value = "http://${aws_s3_bucket.frontend.bucket}.s3-website-${var.region}.amazonaws.com"
+  description = "Raw S3 static-website URL (HTTP only, direct origin, bypasses Cloudflare proxy)."
+  value       = "http://${aws_s3_bucket.frontend.bucket}.s3-website-${var.region}.amazonaws.com"
+}
+
+output "frontend_custom_domain_url" {
+  description = "Custom domain URL, served over HTTPS via Cloudflare Universal SSL (Flexible mode)."
+  value       = "https://${var.custom_domain}"
 }
 
 output "frontend_bucket_name" {
