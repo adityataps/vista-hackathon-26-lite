@@ -155,10 +155,19 @@ data "aws_iam_policy_document" "github_actions_assume" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
+    # NOTE: this account uses GitHub's Enterprise Managed User (EMU) identity
+    # format, so the OIDC "sub" claim includes each side's numeric GitHub ID
+    # appended after "@" (e.g. "repo:adityataps@39311849/vista-hackathon-26-lite@1311420324:ref:...")
+    # instead of the plain "repo:owner/repo:..." format used by regular
+    # GitHub.com accounts. Confirmed via CloudTrail AssumeRoleWithWebIdentity
+    # events after the plain-format condition below caused every OIDC
+    # assumption to fail with "Not authorized to perform
+    # sts:AssumeRoleWithWebIdentity". IDs are stable across repo renames, so
+    # this is arguably more robust than name-based matching anyway.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:adityataps/vista-hackathon-26-lite:*"]
+      values   = ["repo:adityataps@39311849/vista-hackathon-26-lite@1311420324:*"]
     }
   }
 }
